@@ -8,11 +8,20 @@ Infrastructure scripts and deployment plan for a production **RKE2 Kubernetes cl
 
 ## Repository Structure
 
+### Active Scripts
+
+- `lib.sh` — Shared function library (colors, prompts, validators, system detection). Sourced by all `init.*.sh` scripts, not executable on its own. Transfer together: `scp lib.sh init.*.sh root@<ip>:/root/`
+- `init.vps.sh` — **Interactive OS hardening** for both Kubernetes nodes and standalone VPS. Replaces `prepare-rke2-node_2.sh` + `vps-init.sh`. Run first on every node.
+- `init.rke2.sh` — **Interactive RKE2 installation**. Generates `/etc/rancher/rke2/config.yaml`, supports CNI selection (Calico/Cilium/Canal) and WireGuard encryption. Run per-node after `init.vps.sh`.
+- `init.pods.sh` — **Interactive platform stack deployment** via Helm. Deploys ingress-nginx, cert-manager, monitoring, logging, Rancher. Run once on a server node after all nodes have joined.
 - `rke2-master-plan.md` — The canonical deployment guide. 15-phase step-by-step plan covering everything from node creation through monitoring, logging, and customer onboarding. **Read this first** for any cluster-related work.
+
+### Legacy Scripts (reference only)
+
 - `prepare-rke2-node.sh` — Original base image prep script (private interface: `ens10`)
 - `prepare-rke2-node_1.sh` — Updated version (private interface: `enp7s0`)
-- `prepare-rke2-node_2.sh` — Latest version with improved SSH service detection logic
-- `vps-init.sh` — Standalone VPS hardening script (not RKE2-specific), interactive, for general Ubuntu servers
+- `prepare-rke2-node_2.sh` — Previous latest version with improved SSH service detection logic
+- `vps-init.sh` — Previous standalone VPS hardening script (not RKE2-specific)
 
 ## Cluster Architecture
 
@@ -42,8 +51,9 @@ All shell scripts follow these patterns:
 - **Proxy Protocol is ON** for LB ports 80/443 but **OFF for 6443** — enabling it on 6443 breaks kubectl and node joining
 - The ingress-nginx must be configured to expect Proxy Protocol headers **before** enabling Proxy Protocol on the LB, or all requests get 400 Bad Request
 - etcd servers must be joined **one at a time** (quorum sensitivity); workers can join in parallel
-- `prepare-rke2-node_2.sh` is the most recent version of the node prep script — it uses `systemctl cat` for SSH service detection instead of `systemctl list-units`
-- The `vps-init.sh` sets `net.ipv4.ip_forward = 0` which is correct for standalone VPS but **conflicts with Kubernetes** (the RKE2 scripts set it to 1)
+- `init.vps.sh` handles the ip_forward conflict automatically: "Kubernetes node" mode sets `ip_forward=1`, "Standalone VPS" mode sets `ip_forward=0`
+- `init.rke2.sh` warns if `ip_forward` is not enabled (i.e., `init.vps.sh` wasn't run with K8s mode first)
+- `lib.sh` uses `systemctl cat` for SSH service detection (the best approach from `prepare-rke2-node_2.sh`)
 
 ## Working With These Files
 

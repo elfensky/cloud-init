@@ -1,0 +1,487 @@
+#!/usr/bin/env bash
+# =============================================================================
+# init.rke2.sh — RKE2 Installation & Configuration
+# Generates /etc/rancher/rke2/config.yaml and installs RKE2.
+# Run per-node after init.vps.sh.
+#
+# Usage: sudo ./init.rke2.sh
+# =============================================================================
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib.sh"
+
+# =============================================================================
+# Preflight
+# =============================================================================
+require_root
+require_ubuntu
+
+banner "RKE2 Installation — init.rke2.sh" "Ubuntu ${UBUNTU_VERSION}"
+
+# Check ip_forward
+if [[ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)" != "1" ]]; then
+    warn "net.ipv4.ip_forward is not enabled!"
+    warn "Run init.vps.sh with 'Kubernetes node' purpose first."
+    if ! ask_yesno "Continue anyway?" "n"; then
+        exit 1
+    fi
+fi
+
+# Detect private interface
+if detect_private_iface; then
+    info "Private interface: ${PRIVATE_IFACE}"
+    get_private_ip "$PRIVATE_IFACE" && info "Private IP: ${PRIVATE_IP}" || true
+else
+    warn "No private interface detected."
+fi
+
+# Check if RKE2 is already running
+if systemctl is-active --quiet rke2-server 2>/dev/null || systemctl is-active --quiet rke2-agent 2>/dev/null; then
+    warn "RKE2 is already running on this node!"
+    if ! ask_yesno "Continue anyway? (will reconfigure)" "n"; then
+        exit 0
+    fi
+fi
+
+# =============================================================================
+# Interactive Configuration
+# =============================================================================
+
+# --- Step 1: Node role ---
+ask_choice "Node role?" 1 \
+    "Bootstrap server|First server node, initializes the cluster" \
+    "Additional server|Joins existing cluster as control-plane + etcd" \
+    "Worker|Joins as agent node (ingress + workloads)"
+NODE_ROLE=$REPLY  # 1=bootstrap, 2=server, 3=worker
+
+# --- Step 2: Node private IP ---
+DEFAULT_IP="${PRIVATE_IP:-}"
+ask_input "Node private IP" "$DEFAULT_IP"
+NODE_IP="$REPLY"
+if ! validate_ip "$NODE_IP"; then
+    err "Invalid IP: ${NODE_IP}"
+    exit 1
+fi
+
+# --- Step 3: Hostname ---
+ask_input "Hostname" "$(hostname)"
+NODE_HOSTNAME="$REPLY"
+
+# --- Step 4: Cluster token ---
+if [[ "$NODE_ROLE" -eq 1 ]]; then
+    # Bootstrap: auto-generate or manual
+    GENERATED_TOKEN="$(generate_token)"
+    info "Auto-generated cluster token: ${GENERATED_TOKEN}"
+    if ask_yesno "Use this token?" "y"; then
+        CLUSTER_TOKEN="$GENERATED_TOKEN"
+    else
+        ask_input "Cluster token" ""
+        CLUSTER_TOKEN="$REPLY"
+    fi
+
+    echo ""
+    warn "═══════════════════════════════════════════════════════════════"
+    warn "  SAVE THIS TOKEN — you need it to join other nodes:"
+    warn "  ${CLUSTER_TOKEN}"
+    warn "═══════════════════════════════════════════════════════════════"
+    echo ""
+else
+    # Joining: require token
+    ask_input "Cluster token (from bootstrap node)" ""
+    CLUSTER_TOKEN="$REPLY"
+fi
+
+# --- Step 5: Server URL (joining nodes only) ---
+SERVER_URL=""
+if [[ "$NODE_ROLE" -ne 1 ]]; then
+    ask_input "Server URL (e.g. https://10.0.0.8:6443)" "" '^https://'
+    SERVER_URL="$REPLY"
+fi
+
+# --- Step 6: TLS SANs (server roles only) ---
+TLS_SANS=()
+if [[ "$NODE_ROLE" -le 2 ]]; then
+    TLS_SANS+=("$NODE_IP" "$NODE_HOSTNAME")
+    echo ""
+    info "TLS SANs so far: ${TLS_SANS[*]}"
+    info "Add LB IPs, public IPs, or domain names (one per line)."
+    info "Press Enter on empty line when done."
+    while true; do
+        read -rp "Additional SAN: " san
+        [[ -z "$san" ]] && break
+        TLS_SANS+=("$san")
+    done
+fi
+
+# --- Step 7: CNI selection ---
+CNI="calico"
+WIREGUARD="n"
+
+if [[ "$NODE_ROLE" -eq 1 ]]; then
+    # Bootstrap chooses CNI
+    ask_choice "CNI plugin?" 1 \
+        "Calico|Mature, policy-rich, VXLAN overlay" \
+        "Cilium|eBPF-based, modern observability" \
+        "Canal|Flannel networking + Calico policies"
+    case $REPLY in
+        1) CNI="calico" ;;
+        2) CNI="cilium" ;;
+        3) CNI="canal" ;;
+    esac
+elif [[ "$NODE_ROLE" -eq 2 ]]; then
+    # Joining server: confirm CNI
+    ask_choice "CNI (must match bootstrap node)?" 1 \
+        "Calico|VXLAN overlay" \
+        "Cilium|eBPF-based" \
+        "Canal|Flannel + Calico"
+    case $REPLY in
+        1) CNI="calico" ;;
+        2) CNI="cilium" ;;
+        3) CNI="canal" ;;
+    esac
+fi
+
+# --- Step 8: WireGuard (server roles only, not workers) ---
+if [[ "$NODE_ROLE" -le 2 ]]; then
+    echo ""
+    case "$CNI" in
+        calico)
+            info "Calico WireGuard: encrypts pod-to-pod traffic."
+            info "Enabled via kubectl patch AFTER all nodes join."
+            ;;
+        cilium)
+            info "Cilium WireGuard: transparent encryption via eBPF."
+            info "Configured before RKE2 start via HelmChartConfig."
+            ;;
+        canal)
+            warn "Canal WireGuard: less mature than Calico/Cilium."
+            warn "May have stability issues in production."
+            ;;
+    esac
+
+    if ask_yesno "Enable WireGuard encryption?" "n"; then
+        WIREGUARD="y"
+    fi
+fi
+
+# --- Step 9: Advanced options ---
+POD_CIDR="10.42.0.0/16"
+SVC_CIDR="10.43.0.0/16"
+ETCD_METRICS="true"
+AUDIT_LOG="y"
+RKE2_CHANNEL=""
+
+if ask_yesno "Configure advanced options?" "n"; then
+    ask_input "Pod CIDR" "$POD_CIDR"
+    POD_CIDR="$REPLY"
+    if ! validate_cidr "$POD_CIDR"; then
+        err "Invalid CIDR: ${POD_CIDR}"
+        exit 1
+    fi
+
+    ask_input "Service CIDR" "$SVC_CIDR"
+    SVC_CIDR="$REPLY"
+    if ! validate_cidr "$SVC_CIDR"; then
+        err "Invalid CIDR: ${SVC_CIDR}"
+        exit 1
+    fi
+
+    if ! ask_yesno "Expose etcd metrics?" "y"; then
+        ETCD_METRICS="false"
+    fi
+
+    if ! ask_yesno "Enable API server audit logging?" "y"; then
+        AUDIT_LOG="n"
+    fi
+
+    ask_input "RKE2 channel (leave empty for default)" ""
+    RKE2_CHANNEL="$REPLY"
+fi
+
+# --- Step 10: Confirmation ---
+ROLE_LABEL="Bootstrap server"
+[[ "$NODE_ROLE" -eq 2 ]] && ROLE_LABEL="Additional server"
+[[ "$NODE_ROLE" -eq 3 ]] && ROLE_LABEL="Worker"
+
+summary_args=(
+    "Role|${ROLE_LABEL}"
+    "Node IP|${NODE_IP}"
+    "Hostname|${NODE_HOSTNAME}"
+    "Token|${CLUSTER_TOKEN:0:16}..."
+)
+[[ -n "$SERVER_URL" ]] && summary_args+=("Server URL|${SERVER_URL}")
+[[ ${#TLS_SANS[@]} -gt 0 ]] && summary_args+=("TLS SANs|${TLS_SANS[*]}")
+[[ "$NODE_ROLE" -le 2 ]] && summary_args+=("CNI|${CNI}")
+[[ "$WIREGUARD" == "y" ]] && summary_args+=("WireGuard|enabled")
+summary_args+=(
+    "Pod CIDR|${POD_CIDR}"
+    "Service CIDR|${SVC_CIDR}"
+)
+
+print_summary "RKE2 Configuration" "${summary_args[@]}"
+
+if [[ "$NODE_ROLE" -eq 2 ]]; then
+    echo ""
+    warn "═══════════════════════════════════════════════════════════════"
+    warn "  etcd QUORUM: Join servers ONE AT A TIME."
+    warn "  Wait for this node to be Ready before joining the next."
+    warn "═══════════════════════════════════════════════════════════════"
+    echo ""
+fi
+
+if ! ask_yesno "Proceed?" "n"; then
+    info "Aborted."
+    exit 0
+fi
+
+# =============================================================================
+# Execution
+# =============================================================================
+
+# --- 1. Set hostname ---
+separator "Hostname"
+hostnamectl set-hostname "$NODE_HOSTNAME"
+log "Hostname: ${NODE_HOSTNAME}"
+
+# --- 2. Write config.yaml ---
+separator "RKE2 Config"
+mkdir -p /etc/rancher/rke2
+
+{
+    if [[ "$NODE_ROLE" -eq 3 ]]; then
+        # Worker config (minimal)
+        cat <<CFGEOF
+token: "${CLUSTER_TOKEN}"
+server: "${SERVER_URL}"
+node-ip: "${NODE_IP}"
+kubelet-arg:
+  - "node-ip=${NODE_IP}"
+CFGEOF
+    else
+        # Server config (bootstrap or joining)
+        echo "token: \"${CLUSTER_TOKEN}\""
+
+        if [[ "$NODE_ROLE" -eq 2 ]]; then
+            echo "server: \"${SERVER_URL}\""
+        fi
+
+        cat <<CFGEOF
+node-ip: "${NODE_IP}"
+bind-address: "${NODE_IP}"
+advertise-address: "${NODE_IP}"
+CFGEOF
+
+        # TLS SANs
+        if [[ ${#TLS_SANS[@]} -gt 0 ]]; then
+            echo "tls-san:"
+            for san in "${TLS_SANS[@]}"; do
+                echo "  - \"${san}\""
+            done
+        fi
+
+        echo "cni: ${CNI}"
+        echo ""
+
+        cat <<CFGEOF
+kubelet-arg:
+  - "node-ip=${NODE_IP}"
+etcd-expose-metrics: ${ETCD_METRICS}
+CFGEOF
+
+        # Audit logging
+        if [[ "$AUDIT_LOG" == "y" ]]; then
+            cat <<'CFGEOF'
+kube-apiserver-arg:
+  - "audit-log-path=/var/lib/rancher/rke2/server/logs/audit.log"
+  - "audit-log-maxage=30"
+  - "audit-log-maxbackup=10"
+  - "audit-log-maxsize=100"
+CFGEOF
+        fi
+
+        # Custom CIDRs
+        if [[ "$POD_CIDR" != "10.42.0.0/16" ]]; then
+            echo "cluster-cidr: \"${POD_CIDR}\""
+        fi
+        if [[ "$SVC_CIDR" != "10.43.0.0/16" ]]; then
+            echo "service-cidr: \"${SVC_CIDR}\""
+        fi
+    fi
+} > /etc/rancher/rke2/config.yaml
+
+log "config.yaml written to /etc/rancher/rke2/config.yaml"
+echo ""
+info "Contents:"
+cat /etc/rancher/rke2/config.yaml
+echo ""
+
+# --- 3. HelmChartConfig for WireGuard (bootstrap only) ---
+if [[ "$WIREGUARD" == "y" && "$NODE_ROLE" -eq 1 ]]; then
+    MANIFESTS_DIR="/var/lib/rancher/rke2/server/manifests"
+    mkdir -p "$MANIFESTS_DIR"
+
+    case "$CNI" in
+        cilium)
+            separator "Cilium WireGuard HelmChartConfig"
+            cat > "${MANIFESTS_DIR}/rke2-cilium-config.yaml" <<'HELMEOF'
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-cilium
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    encryption:
+      enabled: true
+      type: wireguard
+HELMEOF
+            log "Cilium WireGuard HelmChartConfig written"
+            ;;
+        canal)
+            separator "Canal WireGuard HelmChartConfig"
+            cat > "${MANIFESTS_DIR}/rke2-canal-config.yaml" <<'HELMEOF'
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-canal
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    flannel:
+      backend: "wireguard"
+HELMEOF
+            log "Canal WireGuard HelmChartConfig written"
+            warn "Canal WireGuard is less mature — monitor for stability issues."
+            ;;
+        calico)
+            # Calico WireGuard is post-install via kubectl patch
+            info "Calico WireGuard will be enabled after all nodes join (see post-install)."
+            ;;
+    esac
+fi
+
+# --- 4. Install RKE2 ---
+separator "RKE2 Installation"
+
+INSTALL_ARGS=()
+if [[ "$NODE_ROLE" -eq 3 ]]; then
+    INSTALL_ARGS+=("INSTALL_RKE2_TYPE=agent")
+fi
+if [[ -n "$RKE2_CHANNEL" ]]; then
+    INSTALL_ARGS+=("INSTALL_RKE2_CHANNEL=${RKE2_CHANNEL}")
+fi
+
+info "Installing RKE2..."
+if [[ ${#INSTALL_ARGS[@]} -gt 0 ]]; then
+    curl -sfL https://get.rke2.io | env "${INSTALL_ARGS[@]}" sh -
+else
+    curl -sfL https://get.rke2.io | sh -
+fi
+log "RKE2 installed"
+
+# --- 5. Enable + start ---
+separator "Starting RKE2"
+
+if [[ "$NODE_ROLE" -eq 3 ]]; then
+    RKE2_SERVICE="rke2-agent"
+else
+    RKE2_SERVICE="rke2-server"
+fi
+
+systemctl enable "$RKE2_SERVICE"
+info "Starting ${RKE2_SERVICE}... (this may take 2-5 minutes)"
+systemctl start "$RKE2_SERVICE" &
+
+# --- 6. Wait for ready ---
+TIMEOUT=300
+ELAPSED=0
+INTERVAL=10
+
+info "Waiting for ${RKE2_SERVICE} to be active (timeout: ${TIMEOUT}s)..."
+
+while (( ELAPSED < TIMEOUT )); do
+    if systemctl is-active --quiet "$RKE2_SERVICE" 2>/dev/null; then
+        log "${RKE2_SERVICE} is active after ${ELAPSED}s"
+        break
+    fi
+    sleep "$INTERVAL"
+    ELAPSED=$((ELAPSED + INTERVAL))
+    echo -n "."
+done
+echo ""
+
+if (( ELAPSED >= TIMEOUT )); then
+    err "${RKE2_SERVICE} did not start within ${TIMEOUT}s"
+    err "Check: journalctl -u ${RKE2_SERVICE} --no-pager -n 50"
+    exit 1
+fi
+
+# Extra wait for server nodes to settle
+if [[ "$NODE_ROLE" -le 2 ]]; then
+    info "Waiting 30s for API server to settle..."
+    sleep 30
+fi
+
+# --- 7. Post-install ---
+separator "Post-Install"
+
+if [[ "$NODE_ROLE" -eq 1 ]]; then
+    # Bootstrap: set up kubectl
+    BASHRC="/root/.bashrc"
+
+    if ! grep -q '/var/lib/rancher/rke2/bin' "$BASHRC" 2>/dev/null; then
+        echo 'export PATH=$PATH:/var/lib/rancher/rke2/bin' >> "$BASHRC"
+    fi
+    if ! grep -q 'KUBECONFIG=/etc/rancher/rke2/rke2.yaml' "$BASHRC" 2>/dev/null; then
+        echo 'export KUBECONFIG=/etc/rancher/rke2/rke2.yaml' >> "$BASHRC"
+    fi
+
+    export PATH=$PATH:/var/lib/rancher/rke2/bin
+    export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+    chmod 644 /etc/rancher/rke2/rke2.yaml
+
+    info "Verifying cluster..."
+    sleep 10
+    kubectl get nodes 2>/dev/null || warn "kubectl not ready yet — check again in a minute."
+    echo ""
+
+    # WireGuard post-install for Calico
+    if [[ "$WIREGUARD" == "y" && "$CNI" == "calico" ]]; then
+        echo ""
+        warn "═══════════════════════════════════════════════════════════════"
+        warn "  CALICO WIREGUARD — Run this AFTER all nodes have joined:"
+        warn ""
+        warn "  kubectl patch felixconfiguration default --type=merge -p \\"
+        warn "    '{\"spec\":{\"wireguardEnabled\":true}}'"
+        warn "═══════════════════════════════════════════════════════════════"
+        echo ""
+    fi
+
+    echo ""
+    log "Bootstrap complete!"
+    echo ""
+    info "Next steps:"
+    info "  1. Join additional servers ONE AT A TIME with init.rke2.sh"
+    info "     Wait for each to show Ready: kubectl get nodes -w"
+    info "  2. Then join workers (can be done in parallel)"
+    info "  3. Label workers:"
+    info "     kubectl label node <name> node-role.kubernetes.io/worker=worker"
+    info "  4. Run init.pods.sh on a server node to deploy the platform stack"
+
+elif [[ "$NODE_ROLE" -eq 2 ]]; then
+    log "Server node joined!"
+    echo ""
+    info "On the bootstrap node, verify:"
+    info "  kubectl get nodes"
+    info "  Wait for this node to show Ready before joining the next."
+
+else
+    log "Worker node joined!"
+    echo ""
+    info "On a server node, verify:"
+    info "  kubectl get nodes"
+    info "  Label this worker:"
+    info "  kubectl label node ${NODE_HOSTNAME} node-role.kubernetes.io/worker=worker"
+fi
