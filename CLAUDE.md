@@ -6,22 +6,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Infrastructure scripts and deployment plan for a production **RKE2 Kubernetes cluster on Hetzner Cloud**. This is not a software project with build/test commands — it's operational infrastructure documentation and shell scripts meant to be run on remote Ubuntu 24.04 servers.
 
-## Repository Structure
+## Scripts
 
-### Active Scripts
+All scripts are transferred together: `scp lib.sh init.*.sh root@<ip>:/root/`
 
-- `lib.sh` — Shared function library (colors, prompts, validators, system detection). Sourced by all `init.*.sh` scripts, not executable on its own. Transfer together: `scp lib.sh init.*.sh root@<ip>:/root/`
-- `init.vps.sh` — **Interactive OS hardening** for both Kubernetes nodes and standalone VPS. Replaces `prepare-rke2-node_2.sh` + `vps-init.sh`. Run first on every node.
-- `init.rke2.sh` — **Interactive RKE2 installation**. Generates `/etc/rancher/rke2/config.yaml`, supports CNI selection (Calico/Cilium/Canal) and WireGuard encryption. Run per-node after `init.vps.sh`.
-- `init.pods.sh` — **Interactive platform stack deployment** via Helm. Deploys ingress-nginx, cert-manager, monitoring, logging, Rancher. Run once on a server node after all nodes have joined.
-- `rke2-master-plan.md` — The canonical deployment guide. 15-phase step-by-step plan covering everything from node creation through monitoring, logging, and customer onboarding. **Read this first** for any cluster-related work.
+| Script | Purpose | Run on |
+|--------|---------|--------|
+| `lib.sh` | Shared function library (sourced, not executed) | — |
+| `init.1.vps.sh` | Interactive OS hardening (K8s node or standalone VPS) | Every node, first |
+| `init.2.rke2.sh` | Interactive RKE2 installation, generates `config.yaml` | Each node after step 1 |
+| `init.3.pods.sh` | Interactive platform stack deployment via Helm | Once on a server node after all nodes joined |
 
-### Legacy Scripts (reference only)
-
-- `prepare-rke2-node.sh` — Original base image prep script (private interface: `ens10`)
-- `prepare-rke2-node_1.sh` — Updated version (private interface: `enp7s0`)
-- `prepare-rke2-node_2.sh` — Previous latest version with improved SSH service detection logic
-- `vps-init.sh` — Previous standalone VPS hardening script (not RKE2-specific)
+The numbered prefix encodes execution order. Detailed docs per script in `docs/`.
 
 ## Cluster Architecture
 
@@ -38,22 +34,23 @@ Infrastructure scripts and deployment plan for a production **RKE2 Kubernetes cl
 
 ## Script Conventions
 
-All shell scripts follow these patterns:
 - `set -euo pipefail` at the top
-- Colored output helpers: `log()` (green), `warn()` (yellow), `err()` (red)
-- Root check (`$EUID -ne 0`) before doing anything
-- Interface verification before network configuration
+- All output/prompt/validation functions come from `lib.sh` (see `docs/lib.md` for the full API)
+- Root check (`require_root`) and Ubuntu check (`require_ubuntu`) before anything
 - Designed to be **idempotent** (safe to re-run) — configs are overwritten, not appended
-- Configuration variables at the top of the script (e.g., `PRIVATE_IFACE`, `SSH_PORT`)
+- Every script shows an interactive confirmation summary (`print_summary`) before executing
+- Private interface detection tries `enp7s0 → ens10 → ens7 → eth1` in order
+- SSH service detection uses `systemctl cat` (handles both `ssh` and `sshd` unit names)
 
 ## Key Details to Preserve
 
 - **Proxy Protocol is ON** for LB ports 80/443 but **OFF for 6443** — enabling it on 6443 breaks kubectl and node joining
 - The ingress-nginx must be configured to expect Proxy Protocol headers **before** enabling Proxy Protocol on the LB, or all requests get 400 Bad Request
 - etcd servers must be joined **one at a time** (quorum sensitivity); workers can join in parallel
-- `init.vps.sh` handles the ip_forward conflict automatically: "Kubernetes node" mode sets `ip_forward=1`, "Standalone VPS" mode sets `ip_forward=0`
-- `init.rke2.sh` warns if `ip_forward` is not enabled (i.e., `init.vps.sh` wasn't run with K8s mode first)
-- `lib.sh` uses `systemctl cat` for SSH service detection (the best approach from `prepare-rke2-node_2.sh`)
+- `init.1.vps.sh` handles the ip_forward conflict automatically: "Kubernetes node" mode sets `ip_forward=1`, "Standalone VPS" mode sets `ip_forward=0`
+- `init.2.rke2.sh` warns if `ip_forward` is not enabled (i.e., `init.1.vps.sh` wasn't run with K8s mode first)
+- SSH hardening validates config with `sshd -t` before reloading and offers rollback if user can't verify access
+- Calico WireGuard is a post-install step (`kubectl patch felixconfiguration`); Cilium/Canal WireGuard uses HelmChartConfig manifests placed before RKE2 start
 
 ## Working With These Files
 
