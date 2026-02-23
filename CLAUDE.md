@@ -14,3 +14,4 @@ Collection of scripts to automate VPS deployment and hardening.
 - **Remote execution** — Scripts target Ubuntu 24.04 servers via SSH. Validate locally with `bash -n` and `shellcheck -x`.
 - **Idempotent** — Configs are overwritten (`cat >`), never appended. Preserve this pattern.
 - **Shared library** — All shared functions live in `lib.sh`. Don't duplicate them in individual scripts.
+- **Safety checks** — Scripts contain interactive pauses and warnings before dangerous operations (Proxy Protocol ordering, etcd quorum joins, SSH lockout). Never remove these without understanding the consequences documented in the script comments.
