@@ -506,39 +506,16 @@ else
     RKE2_SERVICE="rke2-server"
 fi
 
-# enable — persist the service across reboots.
 systemctl enable "$RKE2_SERVICE"
-info "Starting ${RKE2_SERVICE}... (this may take 2-5 minutes)"
-# start is backgrounded because RKE2's first boot can block the shell for
-# several minutes while it downloads ~2GB of container images.
-systemctl start "$RKE2_SERVICE" &
+info "Starting ${RKE2_SERVICE}... (this may take several minutes)"
 
-# --- 6. Wait for ready ---
-# 300s timeout is generous because first-boot image pulls are slow on
-# bandwidth-limited VPS instances.
-TIMEOUT=300
-ELAPSED=0
-# 10s poll interval balances responsiveness against unnecessary system load.
-INTERVAL=10
-
-info "Waiting for ${RKE2_SERVICE} to be active (timeout: ${TIMEOUT}s)..."
-
-while (( ELAPSED < TIMEOUT )); do
-    if systemctl is-active --quiet "$RKE2_SERVICE" 2>/dev/null; then
-        log "${RKE2_SERVICE} is active after ${ELAPSED}s"
-        break
-    fi
-    sleep "$INTERVAL"
-    ELAPSED=$((ELAPSED + INTERVAL))
-    echo -n "."
-done
-echo ""
-
-if (( ELAPSED >= TIMEOUT )); then
-    err "${RKE2_SERVICE} did not start within ${TIMEOUT}s"
+if ! timeout 300 systemctl start "$RKE2_SERVICE"; then
+    err "${RKE2_SERVICE} failed to start within 300s"
     err "Check: journalctl -u ${RKE2_SERVICE} --no-pager -n 50"
     exit 1
 fi
+
+log "${RKE2_SERVICE} started"
 
 # Server nodes need extra settle time after systemd reports the unit as active.
 # The API server, etcd, and scheduler components are still initializing
