@@ -47,7 +47,6 @@
 #                        identity, sudo, cron
 #   File limits:         nofile 1048576            default
 #   Core dumps:          default                   disabled
-#   Shared memory:       default                   noexec on /run/shm
 #
 # Both Modes
 # ----------
@@ -695,14 +694,6 @@ else
 * soft core 0
 EOF
     log "Core dumps disabled"
-
-    # Mount shared memory (tmpfs at /run/shm) with noexec to prevent
-    # attackers from writing and executing binaries in world-writable tmpfs.
-    # This is a common technique in post-exploitation (download payload to
-    # /dev/shm, chmod +x, execute).
-    if ! grep -q "tmpfs /run/shm" /etc/fstab; then
-        echo "tmpfs /run/shm tmpfs defaults,noexec,nosuid 0 0" >> /etc/fstab
-    fi
 
     # Restrict cron to root only. chmod 600 on crontab prevents other users
     # from reading scheduled tasks (which may reveal system internals).
