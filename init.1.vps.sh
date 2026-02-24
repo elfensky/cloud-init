@@ -415,6 +415,7 @@ ClientAliveInterval 300
 ClientAliveCountMax 2
 AllowTcpForwarding no
 AllowAgentForwarding no
+HostbasedAuthentication no
 ${ALLOW_USERS}
 Ciphers aes256-gcm@openssh.com,chacha20-poly1305@openssh.com,aes256-ctr
 MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
@@ -424,11 +425,12 @@ EOF
 # Validate the full SSH configuration before reloading. If sshd -t fails the
 # daemon would refuse to restart, locking out the operator. On failure, remove
 # the drop-in file so the previous (working) config remains in effect.
-if sshd -t 2>/dev/null; then
+if sshd_output=$(sshd -t 2>&1); then
     systemctl reload "$SSH_SERVICE"
     log "SSH hardened (key-only, no root, port ${SSH_PORT}) [service: ${SSH_SERVICE}]"
 else
-    err "SSH config validation failed! Removing hardening file."
+    err "SSH config validation failed:"
+    err "$sshd_output"
     rm -f "$SSH_HARDENING_FILE"
     exit 1
 fi
@@ -601,6 +603,18 @@ net.ipv4.conf.default.send_redirects   = 0
 net.ipv6.conf.all.accept_redirects     = 0
 net.ipv6.conf.default.accept_redirects = 0
 net.ipv4.tcp_syncookies = 1
+
+# Baseline hardening (host-level, no CNI impact)
+kernel.randomize_va_space = 2
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+net.ipv4.icmp_ignore_bogus_error_responses = 1
+net.ipv4.conf.all.accept_source_route     = 0
+net.ipv4.conf.default.accept_source_route = 0
+net.ipv6.conf.all.accept_source_route     = 0
+net.ipv6.conf.default.accept_source_route = 0
+net.ipv4.conf.all.log_martians = 1
+# NOTE: rp_filter intentionally excluded — CNI plugins (Calico, Cilium, Canal)
+# require asymmetric routing across veth pairs; strict rp_filter drops pod traffic.
 SYSEOF
 
     log "K8s kernel modules loaded, sysctl configured (ip_forward=1)"
@@ -656,11 +670,15 @@ net.ipv4.icmp_echo_ignore_broadcasts = 1
 
 # Disable source routing
 net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
 net.ipv6.conf.all.accept_source_route = 0
+net.ipv6.conf.default.accept_source_route = 0
 
 # Disable redirects
 net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
 net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
 net.ipv4.conf.all.send_redirects = 0
 net.ipv4.conf.default.send_redirects = 0
 
@@ -827,10 +845,29 @@ EOF
     #   ${distro_id}ESMApps:...-apps-security           — ESM application security
     #   ${distro_id}ESM:...-infra-security              — ESM infrastructure security
     #
-    # Automatic reboot at 04:00 — low-traffic window for kernel updates that
+    # K8s nodes: disable auto-reboot — an uncoordinated reboot can break etcd
+    # quorum or drain workloads ungracefully. Use kured for coordinated reboots.
+    # Standalone: reboot at 04:00 — low-traffic window for kernel updates that
     # require a restart. Without automatic reboot, the server may run a
     # vulnerable kernel indefinitely after a security patch is installed.
-    cat > /etc/apt/apt.conf.d/50unattended-upgrades <<'EOF'
+    if [[ "$PURPOSE" -eq 1 ]]; then
+        cat > /etc/apt/apt.conf.d/50unattended-upgrades <<'EOF'
+Unattended-Upgrade::Allowed-Origins {
+    "${distro_id}:${distro_codename}";
+    "${distro_id}:${distro_codename}-security";
+    "${distro_id}ESMApps:${distro_codename}-apps-security";
+    "${distro_id}ESM:${distro_codename}-infra-security";
+};
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+// Auto-reboot disabled for K8s nodes — use kured for coordinated node reboots
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::SyslogEnable "true";
+EOF
+        systemctl enable --now unattended-upgrades
+        log "Unattended upgrades configured (security patches, auto-reboot disabled — use kured)"
+    else
+        cat > /etc/apt/apt.conf.d/50unattended-upgrades <<'EOF'
 Unattended-Upgrade::Allowed-Origins {
     "${distro_id}:${distro_codename}";
     "${distro_id}:${distro_codename}-security";
@@ -843,9 +880,9 @@ Unattended-Upgrade::Automatic-Reboot "true";
 Unattended-Upgrade::Automatic-Reboot-Time "04:00";
 Unattended-Upgrade::SyslogEnable "true";
 EOF
-
-    systemctl enable --now unattended-upgrades
-    log "Unattended upgrades configured (security patches, reboot at 04:00)"
+        systemctl enable --now unattended-upgrades
+        log "Unattended upgrades configured (security patches, reboot at 04:00)"
+    fi
 fi
 
 # --- 12. Tailscale ---
