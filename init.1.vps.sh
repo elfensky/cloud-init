@@ -155,6 +155,32 @@ if ask_yesno "Create a non-root sudo user?" "y"; then
     fi
 fi
 
+# Safety: warn if no SSH user will exist after PermitRootLogin=no
+if [[ "$CREATE_USER" != "y" ]]; then
+    HAS_SSH_USER="n"
+    for hdir in /home/*/; do
+        [ -d "$hdir" ] || continue
+        local_user=$(basename "$hdir")
+        if [[ -f "${hdir}.ssh/authorized_keys" ]] && id "$local_user" &>/dev/null; then
+            HAS_SSH_USER="y"
+            break
+        fi
+    done
+
+    if [[ "$HAS_SSH_USER" != "y" ]]; then
+        echo ""
+        warn "═══════════════════════════════════════════════════════════════"
+        warn "  No non-root user with SSH keys found on this system!"
+        warn "  PermitRootLogin=no will LOCK YOU OUT."
+        warn "═══════════════════════════════════════════════════════════════"
+        echo ""
+        if ! ask_yesno "Continue WITHOUT a non-root SSH user? (DANGEROUS)" "n"; then
+            info "Aborted. Re-run and create a user."
+            exit 0
+        fi
+    fi
+fi
+
 # --- Step 5: Private interface (K8s only) ---
 # Kubernetes nodes communicate over a private (VLAN/VPC) interface for etcd
 # replication, kubelet API, and CNI pod-to-pod traffic. Auto-detection tries
