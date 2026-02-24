@@ -55,6 +55,8 @@ TMPDIR_PODS=$(mktemp -d)
 chmod 700 "$TMPDIR_PODS"
 trap 'rm -rf "$TMPDIR_PODS"' EXIT
 
+LOCAL_PATH_VERSION="v0.0.30"
+
 # =============================================================================
 # Preflight
 # =============================================================================
@@ -336,7 +338,7 @@ fi
 if [[ "$INSTALL_STORAGE" == "on" ]]; then
     separator "Installing local-path-provisioner"
     kubectl apply -f \
-        https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.30/deploy/local-path-storage.yaml
+        "https://raw.githubusercontent.com/rancher/local-path-provisioner/${LOCAL_PATH_VERSION}/deploy/local-path-storage.yaml"
 
     kubectl patch storageclass local-path \
         -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
