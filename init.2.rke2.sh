@@ -529,18 +529,11 @@ fi
 separator "Post-Install"
 
 if [[ "$NODE_ROLE" -eq 1 ]]; then
-    # Bootstrap node: configure kubectl access for the root user.
-    BASHRC="/root/.bashrc"
-
-    # RKE2 installs kubectl to a non-standard path; add it to PATH.
-    # grep guard ensures idempotency — won't duplicate on re-run.
-    if ! grep -q '/var/lib/rancher/rke2/bin' "$BASHRC" 2>/dev/null; then
-        echo 'export PATH=$PATH:/var/lib/rancher/rke2/bin' >> "$BASHRC"
-    fi
-    # RKE2 writes kubeconfig to /etc/rancher/rke2/rke2.yaml (not ~/.kube/config).
-    if ! grep -q 'KUBECONFIG=/etc/rancher/rke2/rke2.yaml' "$BASHRC" 2>/dev/null; then
-        echo 'export KUBECONFIG=/etc/rancher/rke2/rke2.yaml' >> "$BASHRC"
-    fi
+    # Set up kubectl for all users via profile.d (idempotent overwrite)
+    cat > /etc/profile.d/rke2.sh <<'PROFILEEOF'
+export PATH=$PATH:/var/lib/rancher/rke2/bin
+export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+PROFILEEOF
 
     export PATH=$PATH:/var/lib/rancher/rke2/bin
     export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
