@@ -444,9 +444,10 @@ if [[ "$PURPOSE" -eq 1 ]]; then
     # kubelet 10250, CNI overlay, NodePort range) need unrestricted comms.
     # Restricting individual ports on the private interface is fragile and
     # breaks as the CNI and service mesh evolve.
-    ufw allow in on eth0 to any port "${SSH_PORT}" proto tcp comment 'SSH'
+    detect_public_iface || { err "Cannot detect public interface for UFW rules"; exit 1; }
+    ufw allow in on "${PUBLIC_IFACE}" to any port "${SSH_PORT}" proto tcp comment 'SSH'
     ufw allow in on "${PRIVATE_IFACE}" comment 'Private network'
-    log "UFW: eth0=SSH only, ${PRIVATE_IFACE}=all traffic"
+    log "UFW: ${PUBLIC_IFACE}=SSH only, ${PRIVATE_IFACE}=all traffic"
 else
     # Standalone: expose only SSH for management, plus HTTP/HTTPS for web
     # applications. Additional ports can be opened manually after deployment.
