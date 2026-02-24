@@ -9,6 +9,10 @@ Collection of scripts to automate VPS deployment and hardening.
 - `init.2.rke2.sh` — Interactive RKE2 installation and config generation
 - `init.3.pods.sh` — Interactive platform stack deployment via Helm
 
+## Git
+
+- **Auto-commit** — After completing a user request that modifies files, create a git commit with a descriptive conventional commit message. Do not push.
+
 ## Guardrails
 
 - **Remote execution** — Scripts target Ubuntu 24.04 servers via SSH. Validate locally with `bash -n` and `shellcheck -x`.
