@@ -51,6 +51,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib.sh"
 
+TMPDIR_PODS=$(mktemp -d)
+chmod 700 "$TMPDIR_PODS"
+trap 'rm -rf "$TMPDIR_PODS"' EXIT
+
 # =============================================================================
 # Preflight
 # =============================================================================
@@ -392,7 +396,7 @@ if [[ "$INSTALL_INGRESS" == "on" ]]; then
     #
     # Resource limits 256Mi — caps memory to prevent runaway growth from large
     # request buffering.
-    cat > /tmp/ingress-nginx-values.yaml <<EOF
+    cat > "${TMPDIR_PODS}/ingress-nginx-values.yaml" <<EOF
 controller:
   kind: DaemonSet
   hostPort:
@@ -439,7 +443,7 @@ EOF
     helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
         --namespace ingress-nginx \
         --create-namespace \
-        -f /tmp/ingress-nginx-values.yaml
+        -f "${TMPDIR_PODS}/ingress-nginx-values.yaml"
 
     log "ingress-nginx installed"
 
@@ -595,7 +599,7 @@ if [[ "$INSTALL_MONITORING" == "on" ]]; then
     #
     # Default rules: etcd health, API server latency, node recording rules —
     # provides alerting out of the box.
-    cat > /tmp/monitoring-values.yaml <<EOF
+    cat > "${TMPDIR_PODS}/monitoring-values.yaml" <<EOF
 prometheus:
   prometheusSpec:
     retention: ${PROM_RETENTION}
@@ -670,7 +674,7 @@ EOF
     helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
         --namespace monitoring \
         --create-namespace \
-        -f /tmp/monitoring-values.yaml
+        -f "${TMPDIR_PODS}/monitoring-values.yaml"
 
     CREDENTIALS["Grafana URL"]="https://${GRAFANA_HOST}"
     CREDENTIALS["Grafana user"]="admin"
@@ -707,7 +711,7 @@ if [[ "$INSTALL_LOGGING" == "on" ]]; then
     #
     # Gateway disabled: the Loki gateway adds authentication/routing but is
     # unnecessary for in-cluster access where Promtail pushes directly.
-    cat > /tmp/loki-values.yaml <<EOF
+    cat > "${TMPDIR_PODS}/loki-values.yaml" <<EOF
 loki:
   deploymentMode: SingleBinary
   singleBinary:
@@ -744,7 +748,7 @@ EOF
 
     helm upgrade --install loki grafana/loki \
         --namespace monitoring \
-        -f /tmp/loki-values.yaml
+        -f "${TMPDIR_PODS}/loki-values.yaml"
 
     # Promtail: DaemonSet that runs on every node, tails container log files
     # from /var/log/pods, and pushes them to Loki.
@@ -769,18 +773,29 @@ if [[ "$INSTALL_RANCHER" == "on" ]]; then
     # ingress.tls.source=letsEncrypt — uses cert-manager to auto-provision TLS
     # via Let's Encrypt (requires cert-manager + ingress-nginx installed above).
     # cattle-system: Rancher's conventional namespace.
+    cat > "${TMPDIR_PODS}/rancher-values.yaml" <<EOF
+hostname: "${RANCHER_HOST}"
+ingress:
+  tls:
+    source: letsEncrypt
+letsEncrypt:
+  email: "${CERT_EMAIL}"
+  ingress:
+    class: nginx
+replicas: ${RANCHER_REPLICAS}
+bootstrapPassword: "${RANCHER_PASSWORD}"
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+EOF
+
     helm upgrade --install rancher rancher-stable/rancher \
         --namespace cattle-system \
         --create-namespace \
-        --set hostname="${RANCHER_HOST}" \
-        --set ingress.tls.source=letsEncrypt \
-        --set "letsEncrypt.email=${CERT_EMAIL}" \
-        --set letsEncrypt.ingress.class=nginx \
-        --set "replicas=${RANCHER_REPLICAS}" \
-        --set "bootstrapPassword=${RANCHER_PASSWORD}" \
-        --set resources.requests.cpu=250m \
-        --set resources.requests.memory=256Mi \
-        --set resources.limits.memory=1Gi
+        -f "${TMPDIR_PODS}/rancher-values.yaml"
 
     CREDENTIALS["Rancher URL"]="https://${RANCHER_HOST}"
     CREDENTIALS["Rancher password"]="${RANCHER_PASSWORD}"
