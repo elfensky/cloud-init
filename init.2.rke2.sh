@@ -544,9 +544,7 @@ if [[ "$NODE_ROLE" -eq 1 ]]; then
 
     export PATH=$PATH:/var/lib/rancher/rke2/bin
     export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
-    # chmod 644 allows non-root users to read the kubeconfig and use kubectl.
-    # The default permission (600) restricts access to root only.
-    chmod 644 /etc/rancher/rke2/rke2.yaml
+    chmod 600 /etc/rancher/rke2/rke2.yaml
 
     info "Verifying cluster..."
     sleep 10
