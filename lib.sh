@@ -39,6 +39,7 @@
 #
 # SYSTEM DETECTION
 #   detect_private_iface                    Sets global PRIVATE_IFACE or returns 1
+#   detect_public_iface                     Sets global PUBLIC_IFACE (default-route iface) or returns 1
 #   detect_ssh_service                      Sets global SSH_SERVICE ("ssh"|"sshd") or returns 1
 #   get_private_ip [IFACE]                  Sets global PRIVATE_IP from interface or returns 1
 #   require_root                            Exits if not root
@@ -340,6 +341,12 @@ detect_private_iface() {
     done
     PRIVATE_IFACE=""
     return 1
+}
+
+# detect_public_iface — sets PUBLIC_IFACE to the default-route interface
+detect_public_iface() {
+    PUBLIC_IFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+    [[ -n "$PUBLIC_IFACE" ]]
 }
 
 # Ubuntu uses "ssh" as the service name, most other distros use "sshd".
