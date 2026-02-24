@@ -1,7 +1,51 @@
 # shellcheck shell=bash
-# lib.sh — Shared functions for init.vps.sh, init.rke2.sh, init.pods.sh
-# Source this file; do not execute directly.
-# Usage: source "$(dirname "$0")/lib.sh"
+# =============================================================================
+# lib.sh — Shared function library sourced by all init scripts
+# =============================================================================
+#
+# Usage:
+#   source "$(dirname "$0")/lib.sh"
+#
+# A double-source guard (_LIB_SH_LOADED) prevents re-initialization when
+# multiple scripts source this file in the same shell session.
+#
+# ---------------------------------------------------------------------------
+# Function Reference
+# ---------------------------------------------------------------------------
+#
+# OUTPUT
+#   log MSG                       Print green  [OK]    message to stdout
+#   warn MSG                      Print yellow [WARN]  message to stdout
+#   err MSG                       Print red    [ERROR] message to stderr
+#   info MSG                      Print blue   [INFO]  message to stdout
+#   separator TITLE               Section divider with centered title
+#   banner TITLE [SUBTITLE]       Top-of-script box with timestamp + hostname
+#   print_summary TITLE KV...     Key/value summary box (pipe-delimited pairs)
+#
+# INTERACTIVE PROMPTS
+#   ask_choice PROMPT DEFAULT OPT...        Numbered menu  -> sets REPLY (1-based index)
+#   ask_yesno PROMPT [DEFAULT]              Yes/no         -> returns 0=yes, 1=no
+#   ask_input PROMPT [DEFAULT] [REGEX]      Free text      -> sets REPLY
+#   ask_password PROMPT [MIN_LEN]           Hidden input   -> sets REPLY
+#   ask_multiselect PROMPT OPT...           Toggle list    -> sets MULTISELECT_RESULT array ("on"/"off")
+#
+# VALIDATORS                                All return 0=valid, 1=invalid
+#   validate_ip IP                          IPv4 address (format + octet range)
+#   validate_cidr CIDR                      IPv4 CIDR (address + /0-32 prefix)
+#   validate_hostname HOST                  RFC-952 hostname (max 253 chars)
+#   validate_username USER                  Linux username  (lowercase, max 32 chars)
+#   validate_port PORT                      TCP/UDP port    (1-65535)
+#   validate_ssh_key KEY                    Public key prefix (rsa/ed25519/ecdsa)
+#
+# SYSTEM DETECTION
+#   detect_private_iface                    Sets global PRIVATE_IFACE or returns 1
+#   detect_ssh_service                      Sets global SSH_SERVICE ("ssh"|"sshd") or returns 1
+#   get_private_ip [IFACE]                  Sets global PRIVATE_IP from interface or returns 1
+#   require_root                            Exits if not root
+#   require_ubuntu                          Exits if not Ubuntu; sets UBUNTU_VERSION
+#   require_cmd CMD                         Returns 1 if CMD is not in PATH
+#   generate_token                          Prints 64 hex chars (256-bit random token) to stdout
+# =============================================================================
 
 # Guard against double-sourcing
 [[ -n "${_LIB_SH_LOADED:-}" ]] && return 0
@@ -10,6 +54,9 @@ _LIB_SH_LOADED=1
 # =============================================================================
 # Colors & Output
 # =============================================================================
+
+# ANSI escape sequences used by all output functions below.
+# NC (No Color) resets formatting so colors don't leak into subsequent output.
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
@@ -17,11 +64,13 @@ BLUE='\033[0;34m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+# Errors go to stderr (fd 2) so they can be separated from normal output in pipelines.
 log()  { echo -e "${GREEN}[OK]${NC} $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()  { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 info() { echo -e "${BLUE}[INFO]${NC} $*"; }
 
+# Visual section divider for grouping related prompts during interactive runs.
 separator() {
     echo ""
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -30,6 +79,8 @@ separator() {
     echo ""
 }
 
+# Top-of-script banner shown once at the start of each init script.
+# Includes UTC timestamp and hostname so logs are self-documenting.
 banner() {
     local title="$1"
     local subtitle="${2:-}"
@@ -49,12 +100,14 @@ banner() {
 # =============================================================================
 
 # ask_choice "prompt" default_num "Label|Description" ...
-# Sets REPLY to the chosen index (1-based).
+# Presents a numbered menu. Sets REPLY to the chosen index (1-based).
+# Options are split on "|" into a left-aligned label and a description column.
 ask_choice() {
     local prompt="$1"
     local default="$2"
     shift 2
 
+    # Split each "Label|Description" argument into parallel arrays.
     local -a labels=()
     local -a descs=()
     local i=1
@@ -76,6 +129,7 @@ ask_choice() {
         printf "  ${BOLD}%d)${NC} %-16s— %s%s\n" "$num" "${labels[$i]}" "${descs[$i]}" "$marker"
     done
 
+    # Loop until a valid numeric choice is entered.
     while true; do
         read -rp "Choice [${default}]: " input
         input="${input:-$default}"
@@ -88,7 +142,7 @@ ask_choice() {
 }
 
 # ask_yesno "prompt" default(y/n)
-# Returns 0 for yes, 1 for no.
+# Returns 0 for yes, 1 for no. The hint string capitalizes the default.
 ask_yesno() {
     local prompt="$1"
     local default="${2:-n}"
@@ -100,6 +154,7 @@ ask_yesno() {
         hint="y/N"
     fi
 
+    # ${input,,} lowercases the response to accept Y/Yes/YES uniformly.
     while true; do
         read -rp "${prompt} (${hint}): " input
         input="${input:-$default}"
@@ -112,7 +167,7 @@ ask_yesno() {
 }
 
 # ask_input "prompt" default [regex]
-# Sets REPLY to the input value.
+# Sets REPLY to the input value. If a regex is provided, input must match it.
 ask_input() {
     local prompt="$1"
     local default="${2:-}"
@@ -132,6 +187,7 @@ ask_input() {
             continue
         fi
 
+        # Optional regex gate — callers pass patterns like ^[0-9]+$ for strict input.
         if [[ -n "$regex" ]] && ! [[ "$input" =~ $regex ]]; then
             err "Invalid format."
             continue
@@ -143,12 +199,13 @@ ask_input() {
 }
 
 # ask_password "prompt" [min_length]
-# Sets REPLY to the password value.
+# Sets REPLY to the password value. Uses -s flag to suppress terminal echo.
 ask_password() {
     local prompt="$1"
     local min_length="${2:-0}"
 
     while true; do
+        # -s suppresses echo; the manual echo "" adds the missing newline after input.
         read -srp "${prompt}: " input
         echo ""
 
@@ -163,11 +220,13 @@ ask_password() {
 }
 
 # ask_multiselect "prompt" "Label|Desc|on" ...
-# Sets MULTISELECT_RESULT array (0-indexed, values "on" or "off").
+# Checkbox-style toggle menu. Sets MULTISELECT_RESULT array (0-indexed, "on" or "off").
+# The user enters a number to flip an item, or presses Enter to confirm all selections.
 ask_multiselect() {
     local prompt="$1"
     shift
 
+    # Parse each option into three parallel arrays: label, description, initial state.
     local -a labels=()
     local -a descs=()
     local -a states=()
@@ -181,6 +240,7 @@ ask_multiselect() {
 
     local count=${#labels[@]}
 
+    # Re-render the full list on each iteration so the [x] marks stay current.
     while true; do
         echo ""
         echo -e "${BOLD}${prompt}${NC}"
@@ -195,11 +255,13 @@ ask_multiselect() {
         echo ""
         read -rp "Toggle number, or Enter to confirm: " input
 
+        # Empty input = user is done selecting; export current states.
         if [[ -z "$input" ]]; then
             MULTISELECT_RESULT=("${states[@]}")
             return 0
         fi
 
+        # Toggle the selected item between "on" and "off".
         if [[ "$input" =~ ^[0-9]+$ ]] && (( input >= 1 && input <= count )); then
             local idx=$((input - 1))
             if [[ "${states[$idx]}" == "on" ]]; then
@@ -217,6 +279,8 @@ ask_multiselect() {
 # Validation
 # =============================================================================
 
+# Regex matches IPv4 format, then verifies each octet is 0-255.
+# Regex alone can't check numeric ranges, so the loop handles that.
 validate_ip() {
     local ip="$1"
     [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
@@ -228,6 +292,8 @@ validate_ip() {
     return 0
 }
 
+# Validates CIDR notation by splitting at "/" — delegates the IP part to validate_ip
+# and checks that the prefix length is 0-32.
 validate_cidr() {
     local cidr="$1"
     [[ "$cidr" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] || return 1
@@ -236,19 +302,24 @@ validate_cidr() {
     validate_ip "$ip" && (( prefix <= 32 ))
 }
 
+# RFC-952 hostname: starts and ends with alphanumeric, allows dots and hyphens, max 253 chars.
 validate_hostname() {
     local h="$1"
     [[ "$h" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]] && [[ ${#h} -le 253 ]]
 }
 
+# Linux username rules: lowercase start, alphanumeric/underscore/hyphen, max 32 chars.
 validate_username() {
     [[ "$1" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]
 }
 
+# TCP/UDP port range: 1-65535 (port 0 is reserved).
 validate_port() {
     [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 1 && $1 <= 65535 ))
 }
 
+# Only checks the key type prefix — full key validation would require ssh-keygen.
+# Accepts RSA, Ed25519, and ECDSA public keys.
 validate_ssh_key() {
     [[ "$1" =~ ^(ssh-rsa|ssh-ed25519|ecdsa-sha2) ]]
 }
@@ -257,7 +328,8 @@ validate_ssh_key() {
 # System Detection
 # =============================================================================
 
-# detect_private_iface — sets PRIVATE_IFACE to the first found private interface
+# Common Hetzner/cloud private interface names. Order matters: first match wins.
+# Sets global PRIVATE_IFACE for use by get_private_ip and calling scripts.
 detect_private_iface() {
     local candidates=(enp7s0 ens10 ens7 eth1)
     for iface in "${candidates[@]}"; do
@@ -270,7 +342,8 @@ detect_private_iface() {
     return 1
 }
 
-# detect_ssh_service — sets SSH_SERVICE to "ssh" or "sshd"
+# Ubuntu uses "ssh" as the service name, most other distros use "sshd".
+# We probe both via systemctl to stay portable.
 detect_ssh_service() {
     if systemctl cat ssh.service &>/dev/null; then
         SSH_SERVICE="ssh"
@@ -283,7 +356,8 @@ detect_ssh_service() {
     return 0
 }
 
-# get_private_ip — sets PRIVATE_IP from the detected interface
+# Extracts the first IPv4 address from the given (or previously detected) interface.
+# Falls back to PRIVATE_IFACE if no argument is passed.
 get_private_ip() {
     local iface="${1:-${PRIVATE_IFACE:-}}"
     if [[ -z "$iface" ]]; then
@@ -301,6 +375,7 @@ require_root() {
     fi
 }
 
+# Also captures the Ubuntu version string for use in version-specific logic.
 require_ubuntu() {
     if ! grep -qi "ubuntu" /etc/os-release 2>/dev/null; then
         err "This script requires Ubuntu."
@@ -317,6 +392,8 @@ require_cmd() {
     fi
 }
 
+# 256 bits of entropy (32 hex bytes = 64 hex chars) — sufficient for cluster
+# authentication tokens. Requires openssl in PATH.
 generate_token() {
     openssl rand -hex 32
 }
@@ -326,6 +403,8 @@ generate_token() {
 # =============================================================================
 
 # print_summary "Title" "Key|Value" ...
+# Renders a bordered box with a title row and key/value rows.
+# Pipe-delimited pairs are split into fixed-width columns for alignment.
 print_summary() {
     local title="$1"
     shift

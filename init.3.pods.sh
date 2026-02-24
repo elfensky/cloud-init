@@ -1,10 +1,49 @@
 #!/usr/bin/env bash
 # =============================================================================
-# init.pods.sh — Platform Stack Deployment via Helm
-# Deploys: Helm, local-path, ingress-nginx, cert-manager, monitoring, logging, Rancher
-# Run once on a server node after all nodes have joined.
+# init.3.pods.sh — Platform Stack Deployment via Helm
+# =============================================================================
 #
-# Usage: sudo ./init.pods.sh
+# Purpose
+# -------
+#   Deploys the platform stack (Helm charts + infrastructure services) onto an
+#   RKE2 Kubernetes cluster. Run once on a SERVER node after all nodes have
+#   joined the cluster.
+#
+# Usage
+# -----
+#   sudo ./init.3.pods.sh
+#
+# Preflight
+# ---------
+#   - Verifies kubectl is available (RKE2 server installed on this node)
+#   - Tests cluster connectivity (API server reachable, valid kubeconfig)
+#   - Warns about NotReady nodes (deploying to a partial cluster can leave
+#     pods stuck in Pending due to insufficient resources)
+#
+# Component Selection (interactive multi-select with dependency auto-resolution)
+#   - Helm              — package manager (required by all Helm charts)
+#   - local-path-provisioner — node-local storage class for PVCs
+#   - ingress-nginx     — ingress controller with Proxy Protocol support
+#   - cert-manager      — automated Let's Encrypt TLS certificates
+#   - Monitoring        — Prometheus + Grafana + Alertmanager
+#   - Logging           — Loki + Promtail
+#   - Rancher           — Kubernetes management UI (off by default)
+#
+# Dependency Rules (auto-resolved if a downstream component is selected)
+#   - Rancher       -> cert-manager (TLS) + ingress-nginx (HTTP routing)
+#   - Monitoring    -> local-path-provisioner (PVCs for data persistence)
+#   - Logging       -> local-path-provisioner (PVCs for data persistence)
+#   - Any Helm chart -> Helm
+#
+# CRITICAL — Proxy Protocol ordering:
+#   Install ingress-nginx FIRST (it expects Proxy Protocol from the first
+#   request). THEN enable Proxy Protocol on the load balancer for ports 80/443.
+#   If the LB sends plain HTTP while nginx expects PP, clients get 400 errors.
+#   If nginx expects plain HTTP while LB sends PP, nginx sees garbage bytes.
+#
+# Output
+# ------
+#   /root/platform-credentials.txt (mode 600) — all generated passwords
 # =============================================================================
 
 set -euo pipefail
@@ -19,15 +58,20 @@ require_root
 
 banner "Platform Stack — init.pods.sh"
 
-# Ensure kubectl works
+# RKE2 installs kubectl to a non-standard path. This script runs as root via
+# sudo (not an interactive login shell) so .bashrc is not sourced and PATH
+# does not include the RKE2 bin directory. Export both PATH and KUBECONFIG
+# explicitly to ensure kubectl can find the binary and the cluster credentials.
 export PATH=$PATH:/var/lib/rancher/rke2/bin
 export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
 
+# Confirm RKE2 server is installed on this node (kubectl binary exists)
 if ! command -v kubectl &>/dev/null; then
     err "kubectl not found. Is RKE2 installed on this node?"
     exit 1
 fi
 
+# Confirm the API server is reachable and this node has a valid kubeconfig
 if ! kubectl get nodes &>/dev/null; then
     err "Cannot connect to cluster. Is this a server node with RKE2 running?"
     exit 1
@@ -37,7 +81,9 @@ separator "Cluster Status"
 kubectl get nodes -o wide
 echo ""
 
-# Warn about NotReady nodes
+# Warn about NotReady nodes — deploying to a partial cluster can cause pods
+# stuck in Pending when resources are insufficient (e.g., DaemonSets waiting
+# for worker nodes that haven't finished joining)
 NOT_READY=$(kubectl get nodes --no-headers 2>/dev/null | grep -c "NotReady" || true)
 if [[ "$NOT_READY" -gt 0 ]]; then
     warn "${NOT_READY} node(s) are NotReady!"
@@ -49,6 +95,10 @@ fi
 # =============================================================================
 # Component Selection
 # =============================================================================
+
+# Multi-select defaults: everything enabled except Rancher. Rancher is an
+# optional management UI that adds overhead (3 replicas by default) and is not
+# needed for clusters managed via kubectl/GitOps.
 ask_multiselect "Select components to install:" \
     "Helm|Package manager (required by Helm charts)|on" \
     "local-path-provisioner|Node-local storage for PVCs|on" \
@@ -66,7 +116,12 @@ INSTALL_MONITORING="${MULTISELECT_RESULT[4]}"
 INSTALL_LOGGING="${MULTISELECT_RESULT[5]}"
 INSTALL_RANCHER="${MULTISELECT_RESULT[6]}"
 
-# Enforce dependencies
+# --- Dependency auto-resolution ---
+# Prevents broken deployments caused by missing prerequisites. Each rule
+# force-enables the upstream component when a downstream one is selected.
+
+# Rancher needs cert-manager (TLS certificate provisioning) and ingress-nginx
+# (HTTP routing to the Rancher pods)
 if [[ "$INSTALL_RANCHER" == "on" ]]; then
     if [[ "$INSTALL_CERTMGR" != "on" || "$INSTALL_INGRESS" != "on" ]]; then
         warn "Rancher requires cert-manager and ingress-nginx. Enabling them."
@@ -75,6 +130,9 @@ if [[ "$INSTALL_RANCHER" == "on" ]]; then
     fi
 fi
 
+# Monitoring and Logging need PersistentVolumeClaims for data persistence
+# (Prometheus TSDB, Alertmanager state, Grafana dashboards, Loki chunks).
+# local-path-provisioner provides the default StorageClass for those PVCs.
 if [[ "$INSTALL_MONITORING" == "on" || "$INSTALL_LOGGING" == "on" ]]; then
     if [[ "$INSTALL_STORAGE" != "on" ]]; then
         warn "Monitoring/Logging need storage. Enabling local-path-provisioner."
@@ -82,7 +140,7 @@ if [[ "$INSTALL_MONITORING" == "on" || "$INSTALL_LOGGING" == "on" ]]; then
     fi
 fi
 
-# Check if any Helm chart is selected
+# Any Helm chart obviously needs the Helm binary installed first
 NEEDS_HELM="off"
 for comp in "$INSTALL_STORAGE" "$INSTALL_INGRESS" "$INSTALL_CERTMGR" "$INSTALL_MONITORING" "$INSTALL_LOGGING" "$INSTALL_RANCHER"; do
     [[ "$comp" == "on" ]] && NEEDS_HELM="on"
@@ -100,9 +158,16 @@ fi
 LB_PRIVATE_IP="10.0.0.8"
 if [[ "$INSTALL_INGRESS" == "on" ]]; then
     separator "Configure: ingress-nginx"
+
+    # The LB private IP is used in proxy-real-ip-cidr to trust Proxy Protocol
+    # headers from ONLY this IP. This prevents IP spoofing from other sources
+    # that could forge X-Forwarded-For headers.
     ask_input "Load balancer private IP" "$LB_PRIVATE_IP"
     LB_PRIVATE_IP="$REPLY"
 
+    # Proxy Protocol ordering warning: nginx expects PP-wrapped packets from
+    # the very first connection. The LB must NOT send PP until nginx is ready,
+    # and port 6443 (Kubernetes API) must NEVER use PP (kubectl doesn't speak it).
     echo ""
     warn "═══════════════════════════════════════════════════════════════"
     warn "  PROXY PROTOCOL ORDERING:"
@@ -122,6 +187,9 @@ if [[ "$INSTALL_CERTMGR" == "on" ]]; then
     ask_input "Email for Let's Encrypt" ""
     CERT_EMAIL="$REPLY"
 
+    # ClusterIssuer selection: staging has no rate limits but issues untrusted
+    # certs (good for testing); production is rate-limited (50 certs/week/domain)
+    # but issues real browser-trusted certs.
     ask_choice "ClusterIssuers to create?" 2 \
         "Staging only|For testing (untrusted certs)" \
         "Both staging + production|Recommended" \
@@ -165,10 +233,14 @@ if [[ "$INSTALL_MONITORING" == "on" ]]; then
         [[ $REPLY -eq 1 ]] && GRAFANA_ISSUER="letsencrypt-staging" || GRAFANA_ISSUER="letsencrypt-prod"
     fi
 
+    # Prometheus retention 30d + 50Gi: 30 days of metrics history; 50Gi
+    # accommodates ~100 time series per pod for a small-medium cluster
     ask_input "Prometheus retention" "$PROM_RETENTION"
     PROM_RETENTION="$REPLY"
     ask_input "Prometheus storage" "$PROM_STORAGE"
     PROM_STORAGE="$REPLY"
+
+    # Alertmanager 5Gi: stores alert state and silences, much less data than Prometheus
     ask_input "Alertmanager storage" "$AM_STORAGE"
     AM_STORAGE="$REPLY"
 fi
@@ -178,6 +250,7 @@ LOKI_RETENTION="336h"
 LOKI_STORAGE="50Gi"
 if [[ "$INSTALL_LOGGING" == "on" ]]; then
     separator "Configure: Logging"
+    # 336h = 14 days; longer retention needs more storage
     ask_input "Loki retention (hours)" "$LOKI_RETENTION"
     LOKI_RETENTION="$REPLY"
     ask_input "Loki storage size" "$LOKI_STORAGE"
@@ -194,6 +267,8 @@ if [[ "$INSTALL_RANCHER" == "on" ]]; then
     ask_input "Rancher hostname" "$DEFAULT_RANCHER_HOST"
     RANCHER_HOST="$REPLY"
 
+    # Bootstrap password: one-time first-login password. The user is forced
+    # to change it on first access via the Rancher UI.
     echo "Bootstrap password (leave empty to auto-generate):"
     ask_password "Password" 0
     RANCHER_PASSWORD="$REPLY"
@@ -202,6 +277,8 @@ if [[ "$INSTALL_RANCHER" == "on" ]]; then
         info "Auto-generated Rancher password: ${RANCHER_PASSWORD}"
     fi
 
+    # Replicas should match the number of server nodes for HA;
+    # 3 is default for a 3-node control plane
     ask_input "Rancher replicas" "$RANCHER_REPLICAS"
     RANCHER_REPLICAS="$REPLY"
 fi
@@ -232,7 +309,9 @@ fi
 # Deployment
 # =============================================================================
 
-# Track credentials for final output
+# Bash associative array collecting all generated credentials during deployment.
+# Written to a file at the end so the operator has a single reference for all
+# passwords and URLs.
 declare -A CREDENTIALS
 
 # --- 1. Helm ---
@@ -247,6 +326,9 @@ if [[ "$INSTALL_HELM" == "on" ]]; then
 fi
 
 # --- 2. local-path-provisioner ---
+# Provides node-local PersistentVolume storage using host directories.
+# Set as the default StorageClass so PVCs that don't specify a class are
+# automatically provisioned.
 if [[ "$INSTALL_STORAGE" == "on" ]]; then
     separator "Installing local-path-provisioner"
     kubectl apply -f \
@@ -265,6 +347,51 @@ if [[ "$INSTALL_INGRESS" == "on" ]]; then
     helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx 2>/dev/null || true
     helm repo update
 
+    # --- ingress-nginx values explained ---
+    #
+    # DaemonSet + hostPort: runs one ingress pod per worker node, binding ports
+    # 80/443 directly on the host. No Kubernetes LoadBalancer service needed —
+    # the external LB (e.g., Hetzner) points directly to worker node IPs.
+    #
+    # service.enabled: false — disables the cloud-native LoadBalancer service
+    # since traffic arrives via the external LB to hostPorts.
+    #
+    # nodeSelector worker — ingress pods only on workers, keeping control plane
+    # nodes dedicated to cluster operations.
+    #
+    # use-proxy-protocol: "true" — parse Proxy Protocol v1/v2 headers to extract
+    # the real client IP (the LB wraps each TCP connection with a PP header).
+    #
+    # proxy-real-ip-cidr — trust PP headers from ONLY the LB private IP.
+    # Security: prevents IP spoofing from other sources.
+    #
+    # use-forwarded-headers + compute-full-forwarded-for — propagate the real
+    # client IP via X-Forwarded-For so applications can use it.
+    #
+    # hide-headers: Server,X-Powered-By — security: don't leak server software info.
+    #
+    # hsts: true + 1 year + includeSubdomains — enforce HTTPS for all future visits.
+    #
+    # proxy-body-size: 50m — allow file uploads up to 50MB (default 1m is too
+    # restrictive for most applications).
+    #
+    # proxy-read-timeout/proxy-send-timeout: 120 — 2 minutes for long requests
+    # (webhooks, file uploads, slow API responses).
+    #
+    # ssl-protocols: TLSv1.2 TLSv1.3 — TLS 1.0/1.1 are deprecated due to known
+    # vulnerabilities (POODLE, BEAST).
+    #
+    # log-format-upstream — custom log format includes upstream name, address,
+    # response time, and request ID for debugging request routing issues.
+    #
+    # admissionWebhooks — validates Ingress resources at creation time, catching
+    # misconfigurations (duplicate paths, invalid annotations) before deployment.
+    #
+    # metrics + serviceMonitor — enables Prometheus to auto-discover and scrape
+    # nginx metrics (request rate, latency, error rate, connection count).
+    #
+    # Resource limits 256Mi — caps memory to prevent runaway growth from large
+    # request buffering.
     cat > /tmp/ingress-nginx-values.yaml <<EOF
 controller:
   kind: DaemonSet
@@ -316,6 +443,9 @@ EOF
 
     log "ingress-nginx installed"
 
+    # Remind the operator to enable Proxy Protocol on the LB NOW — nginx is
+    # already expecting PP-wrapped connections on ports 80/443. Port 6443
+    # (Kubernetes API) must never use PP because kubectl does not speak it.
     echo ""
     warn "═══════════════════════════════════════════════════════════════"
     warn "  NEXT: Enable Proxy Protocol on Hetzner LB for ports 80/443"
@@ -332,6 +462,9 @@ if [[ "$INSTALL_CERTMGR" == "on" ]]; then
     helm repo add jetstack https://charts.jetstack.io 2>/dev/null || true
     helm repo update
 
+    # crds.enabled=true installs Custom Resource Definitions (Certificate,
+    # ClusterIssuer, etc.) as part of the Helm chart, avoiding a separate
+    # kubectl apply step for CRDs.
     helm upgrade --install cert-manager jetstack/cert-manager \
         --namespace cert-manager \
         --create-namespace \
@@ -341,11 +474,19 @@ if [[ "$INSTALL_CERTMGR" == "on" ]]; then
 
     log "cert-manager installed"
 
+    # cert-manager's validating webhook must be running before creating
+    # ClusterIssuers, otherwise the apply fails with a webhook connection error.
+    # The sleep 30 fallback covers cases where kubectl wait times out but the
+    # webhook is actually ready (condition not yet reported by the API server).
     info "Waiting for cert-manager webhook to be ready..."
     kubectl wait --for=condition=available deployment/cert-manager-webhook \
         -n cert-manager --timeout=120s 2>/dev/null || sleep 30
 
-    # ClusterIssuers
+    # ClusterIssuer (not Issuer): works across ALL namespaces, so one issuer
+    # serves the whole cluster. Uses ACME HTTP-01 solver, which proves domain
+    # ownership by serving a challenge token via the nginx ingress class.
+
+    # Staging server: no rate limits, issues untrusted certs, use for testing
     if [[ "$CERT_ISSUERS" == "staging" || "$CERT_ISSUERS" == "both" ]]; then
         kubectl apply -f - <<EOF
 apiVersion: cert-manager.io/v1
@@ -366,6 +507,8 @@ EOF
         log "ClusterIssuer: letsencrypt-staging"
     fi
 
+    # Production server: rate-limited (50 certs/week/domain), issues real
+    # browser-trusted certificates
     if [[ "$CERT_ISSUERS" == "prod" || "$CERT_ISSUERS" == "both" ]]; then
         kubectl apply -f - <<EOF
 apiVersion: cert-manager.io/v1
@@ -388,13 +531,18 @@ EOF
 fi
 
 # --- 5. Monitoring ---
+# kube-prometheus-stack is a meta-chart bundling: Prometheus (metrics collection),
+# Grafana (dashboards), Alertmanager (alert routing), node-exporter (host metrics),
+# and kube-state-metrics (Kubernetes object metrics).
 if [[ "$INSTALL_MONITORING" == "on" ]]; then
     separator "Installing Monitoring (Prometheus + Grafana + Alertmanager)"
 
     helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
     helm repo update
 
-    # Build Grafana ingress section conditionally
+    # Build Grafana ingress section conditionally.
+    # The cert-manager.io/cluster-issuer annotation auto-provisions a TLS
+    # certificate for the Grafana hostname.
     GRAFANA_INGRESS=""
     if [[ -n "$GRAFANA_ISSUER" && -n "$GRAFANA_HOST" ]]; then
         GRAFANA_INGRESS="
@@ -411,7 +559,9 @@ if [[ "$INSTALL_MONITORING" == "on" ]]; then
           - ${GRAFANA_HOST}"
     fi
 
-    # Loki datasource (pre-configure if logging is also being installed)
+    # Pre-configure Loki as a Grafana data source if logging is also being
+    # installed. This saves manual setup — Grafana will have both Prometheus
+    # and Loki available out of the box.
     LOKI_DS=""
     if [[ "$INSTALL_LOGGING" == "on" ]]; then
         LOKI_DS="
@@ -423,6 +573,28 @@ if [[ "$INSTALL_MONITORING" == "on" ]]; then
       isDefault: false"
     fi
 
+    # --- Monitoring values explained ---
+    #
+    # serviceMonitorSelectorNilUsesHelmValues: false — scrape ALL ServiceMonitors
+    # in the cluster, not just those from this Helm release. Critical for
+    # monitoring ingress-nginx, cert-manager, and other components.
+    #
+    # podMonitorSelectorNilUsesHelmValues: false — same for PodMonitors.
+    #
+    # Prometheus retention 30d + 50Gi: 30 days of metrics; 50Gi accommodates
+    # ~100 time series per pod for a small-medium cluster.
+    #
+    # Alertmanager 5Gi: stores alert state and silences; much less data than
+    # Prometheus.
+    #
+    # Grafana persistence 10Gi: keeps custom dashboards and settings across pod
+    # restarts (without persistence, dashboards reset on every restart).
+    #
+    # Resource limits: right-sized for small-medium clusters. Prometheus gets
+    # the most (2Gi limit) as it holds all metrics in memory.
+    #
+    # Default rules: etcd health, API server latency, node recording rules —
+    # provides alerting out of the box.
     cat > /tmp/monitoring-values.yaml <<EOF
 prometheus:
   prometheusSpec:
@@ -508,12 +680,33 @@ EOF
 fi
 
 # --- 6. Logging ---
+# Loki + Promtail: Loki stores logs, Promtail ships them from every node.
+# Both deployed in the monitoring namespace, co-located with Prometheus/Grafana
+# for simplified network policies and service discovery.
 if [[ "$INSTALL_LOGGING" == "on" ]]; then
     separator "Installing Logging (Loki + Promtail)"
 
     helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
     helm repo update
 
+    # --- Loki values explained ---
+    #
+    # SingleBinary mode: simplest deployment (one pod does ingestion, storage,
+    # and querying). Appropriate for single-cluster setups; for large scale,
+    # switch to microservices mode.
+    #
+    # TSDB + filesystem storage: no object storage (S3/GCS) required; works
+    # with local-path-provisioner PVCs.
+    #
+    # Schema v13: latest Loki schema version for index and chunk format.
+    #
+    # retention_period: 336h (14 days); longer retention needs more storage.
+    #
+    # compactor.retention_enabled: true — Loki does NOT delete old data unless
+    # the compactor is explicitly told to enforce retention.
+    #
+    # Gateway disabled: the Loki gateway adds authentication/routing but is
+    # unnecessary for in-cluster access where Promtail pushes directly.
     cat > /tmp/loki-values.yaml <<EOF
 loki:
   deploymentMode: SingleBinary
@@ -553,6 +746,10 @@ EOF
         --namespace monitoring \
         -f /tmp/loki-values.yaml
 
+    # Promtail: DaemonSet that runs on every node, tails container log files
+    # from /var/log/pods, and pushes them to Loki.
+    # config.clients[0].url uses the Kubernetes DNS name "loki" in the same
+    # namespace (monitoring) for service discovery.
     helm upgrade --install promtail grafana/promtail \
         --namespace monitoring \
         --set "config.clients[0].url=http://loki:3100/loki/api/v1/push"
@@ -564,9 +761,14 @@ fi
 if [[ "$INSTALL_RANCHER" == "on" ]]; then
     separator "Installing Rancher"
 
+    # rancher-stable: production-grade releases only (vs rancher-latest which
+    # includes release candidates)
     helm repo add rancher-stable https://releases.rancher.com/server-charts/stable 2>/dev/null || true
     helm repo update
 
+    # ingress.tls.source=letsEncrypt — uses cert-manager to auto-provision TLS
+    # via Let's Encrypt (requires cert-manager + ingress-nginx installed above).
+    # cattle-system: Rancher's conventional namespace.
     helm upgrade --install rancher rancher-stable/rancher \
         --namespace cattle-system \
         --create-namespace \
@@ -591,7 +793,7 @@ fi
 # =============================================================================
 separator "Deployment Complete"
 
-# Credentials
+# Display all collected credentials in a summary box
 if [[ ${#CREDENTIALS[@]} -gt 0 ]]; then
     cred_args=()
     for key in "${!CREDENTIALS[@]}"; do
@@ -600,11 +802,13 @@ if [[ ${#CREDENTIALS[@]} -gt 0 ]]; then
     print_summary "Credentials (save these!)" "${cred_args[@]}"
 fi
 
+# Quick visual check that all components are starting correctly
 echo ""
 info "Pod status:"
 kubectl get pods -A --sort-by=.metadata.namespace 2>/dev/null | head -40
 echo ""
 
+# Actionable reminders for post-deployment tasks
 info "Next steps:"
 [[ "$INSTALL_INGRESS" == "on" ]] && info "  - Enable Proxy Protocol on Hetzner LB for ports 80/443 (if not done)"
 [[ "$INSTALL_CERTMGR" == "on" ]] && info "  - Verify ClusterIssuers: kubectl get clusterissuer"
@@ -613,7 +817,8 @@ info "Next steps:"
 info "  - Deploy customer namespaces with network policies"
 info "  - Switch Grafana to letsencrypt-prod when ready"
 
-# Save credentials to file
+# Save credentials to /root/platform-credentials.txt (mode 600 = root-only
+# readable) so the operator has a persistent record of all generated passwords
 CRED_FILE="/root/platform-credentials.txt"
 {
     echo "================================================================================"
