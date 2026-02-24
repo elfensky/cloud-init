@@ -197,6 +197,8 @@ if [[ "$NODE_ROLE" -eq 1 ]]; then
     esac
 elif [[ "$NODE_ROLE" -eq 2 ]]; then
     # Joining servers must use the same CNI the bootstrap node selected.
+    echo ""
+    warn "CNI MUST match the bootstrap node. A mismatch causes silent join failures."
     ask_choice "CNI (must match bootstrap node)?" 1 \
         "Calico|VXLAN overlay" \
         "Cilium|eBPF-based" \
