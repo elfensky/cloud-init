@@ -27,10 +27,12 @@
 #   - cert-manager      — automated Let's Encrypt TLS certificates
 #   - Monitoring        — Prometheus + Grafana + Alertmanager
 #   - Logging           — Loki + Promtail
+#   - CrowdSec          — L7 WAF + bot protection for ingress (off by default)
 #   - Rancher           — Kubernetes management UI (off by default)
 #
 # Dependency Rules (auto-resolved if a downstream component is selected)
 #   - Rancher       -> cert-manager (TLS) + ingress-nginx (HTTP routing)
+#   - CrowdSec      -> ingress-nginx (bounces at the ingress level)
 #   - Monitoring    -> local-path-provisioner (PVCs for data persistence)
 #   - Logging       -> local-path-provisioner (PVCs for data persistence)
 #   - Any Helm chart -> Helm
@@ -56,6 +58,22 @@ chmod 700 "$TMPDIR_PODS"
 trap 'rm -rf "$TMPDIR_PODS"' EXIT
 
 LOCAL_PATH_VERSION="v0.0.30"
+LOCAL_PATH_SHA256="fe682186b00400fe7e2b72bae16f63e47a56a6dcc677938c6642139ef670045e"
+
+# Helm chart versions — pin to avoid breaking changes from upstream releases.
+# Update these deliberately after testing, not accidentally by re-running.
+HELM_VERSION="v3.17.1"
+INGRESS_NGINX_VERSION="4.12.1"
+CERT_MANAGER_VERSION="v1.17.1"
+KUBE_PROM_STACK_VERSION="69.3.0"
+LOKI_VERSION="6.25.0"
+PROMTAIL_VERSION="6.16.6"
+RANCHER_VERSION="2.10.3"
+CROWDSEC_VERSION="0.22.0"
+
+# CrowdSec controller image (ingress-nginx rebuild with Lua support)
+CROWDSEC_CONTROLLER_TAG="v1.13.2"
+CROWDSEC_CONTROLLER_DIGEST="sha256:4575be24781cad35f8e58437db6a3f492df2a3167fed2b6759a6ff0dc3488d56"
 
 # =============================================================================
 # Preflight
@@ -112,6 +130,7 @@ ask_multiselect "Select components to install:" \
     "cert-manager|Let's Encrypt TLS certificates|on" \
     "Monitoring|Prometheus + Grafana + Alertmanager|on" \
     "Logging|Loki + Promtail|on" \
+    "CrowdSec|WAF + bot protection for ingress (L7)|off" \
     "Rancher|Kubernetes management UI|off"
 
 INSTALL_HELM="${MULTISELECT_RESULT[0]}"
@@ -120,7 +139,8 @@ INSTALL_INGRESS="${MULTISELECT_RESULT[2]}"
 INSTALL_CERTMGR="${MULTISELECT_RESULT[3]}"
 INSTALL_MONITORING="${MULTISELECT_RESULT[4]}"
 INSTALL_LOGGING="${MULTISELECT_RESULT[5]}"
-INSTALL_RANCHER="${MULTISELECT_RESULT[6]}"
+INSTALL_CROWDSEC="${MULTISELECT_RESULT[6]}"
+INSTALL_RANCHER="${MULTISELECT_RESULT[7]}"
 
 # --- Dependency auto-resolution ---
 # Prevents broken deployments caused by missing prerequisites. Each rule
@@ -132,6 +152,14 @@ if [[ "$INSTALL_RANCHER" == "on" ]]; then
     if [[ "$INSTALL_CERTMGR" != "on" || "$INSTALL_INGRESS" != "on" ]]; then
         warn "Rancher requires cert-manager and ingress-nginx. Enabling them."
         INSTALL_CERTMGR="on"
+        INSTALL_INGRESS="on"
+    fi
+fi
+
+# CrowdSec bounces at the ingress level — requires ingress-nginx
+if [[ "$INSTALL_CROWDSEC" == "on" ]]; then
+    if [[ "$INSTALL_INGRESS" != "on" ]]; then
+        warn "CrowdSec requires ingress-nginx. Enabling it."
         INSTALL_INGRESS="on"
     fi
 fi
@@ -148,7 +176,7 @@ fi
 
 # Any Helm chart obviously needs the Helm binary installed first
 NEEDS_HELM="off"
-for comp in "$INSTALL_STORAGE" "$INSTALL_INGRESS" "$INSTALL_CERTMGR" "$INSTALL_MONITORING" "$INSTALL_LOGGING" "$INSTALL_RANCHER"; do
+for comp in "$INSTALL_STORAGE" "$INSTALL_INGRESS" "$INSTALL_CERTMGR" "$INSTALL_MONITORING" "$INSTALL_LOGGING" "$INSTALL_CROWDSEC" "$INSTALL_RANCHER"; do
     [[ "$comp" == "on" ]] && NEEDS_HELM="on"
 done
 if [[ "$NEEDS_HELM" == "on" && "$INSTALL_HELM" != "on" ]]; then
@@ -263,15 +291,41 @@ if [[ "$INSTALL_LOGGING" == "on" ]]; then
     LOKI_STORAGE="$REPLY"
 fi
 
+# --- CrowdSec ---
+CROWDSEC_BOUNCER_KEY=""
+CROWDSEC_ENROLL_KEY=""
+if [[ "$INSTALL_CROWDSEC" == "on" ]]; then
+    separator "Configure: CrowdSec"
+
+    # Bouncer API key: authenticates the ingress-nginx Lua bouncer to LAPI.
+    # Auto-generated for security; manual entry not needed.
+    CROWDSEC_BOUNCER_KEY="$(openssl rand -hex 32)"
+
+    # Console enrollment: optional, connects to CrowdSec console for
+    # centralized dashboard, shared blocklists, and alert visibility.
+    echo "CrowdSec console enrollment key (leave empty to skip):"
+    echo "  Get one at: https://app.crowdsec.net"
+    ask_input "Enrollment key" ""
+    CROWDSEC_ENROLL_KEY="$REPLY"
+fi
+
 # --- Rancher ---
 RANCHER_HOST=""
 RANCHER_PASSWORD=""
 RANCHER_REPLICAS="3"
+RANCHER_ISSUER="letsencrypt-staging"
 if [[ "$INSTALL_RANCHER" == "on" ]]; then
     separator "Configure: Rancher"
     DEFAULT_RANCHER_HOST="rancher.${CERT_DOMAIN:-yourdomain.com}"
     ask_input "Rancher hostname" "$DEFAULT_RANCHER_HOST"
     RANCHER_HOST="$REPLY"
+
+    if [[ "$INSTALL_CERTMGR" == "on" ]]; then
+        ask_choice "TLS issuer for Rancher?" 1 \
+            "letsencrypt-staging|Test first" \
+            "letsencrypt-prod|Production cert"
+        [[ $REPLY -eq 1 ]] && RANCHER_ISSUER="letsencrypt-staging" || RANCHER_ISSUER="letsencrypt-prod"
+    fi
 
     # Bootstrap password: one-time first-login password. The user is forced
     # to change it on first access via the Rancher UI.
@@ -299,6 +353,7 @@ components=()
 [[ "$INSTALL_CERTMGR" == "on" ]] && components+=("cert-manager")
 [[ "$INSTALL_MONITORING" == "on" ]] && components+=("Monitoring")
 [[ "$INSTALL_LOGGING" == "on" ]] && components+=("Logging")
+[[ "$INSTALL_CROWDSEC" == "on" ]] && components+=("CrowdSec")
 [[ "$INSTALL_RANCHER" == "on" ]] && components+=("Rancher")
 
 print_summary "Deployment Plan" \
@@ -326,7 +381,8 @@ if [[ "$INSTALL_HELM" == "on" ]]; then
     if command -v helm &>/dev/null; then
         log "Helm already installed: $(helm version --short 2>/dev/null)"
     else
-        curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | \
+            DESIRED_VERSION="$HELM_VERSION" bash
         log "Helm installed: $(helm version --short 2>/dev/null)"
     fi
 fi
@@ -337,8 +393,10 @@ fi
 # automatically provisioned.
 if [[ "$INSTALL_STORAGE" == "on" ]]; then
     separator "Installing local-path-provisioner"
-    kubectl apply -f \
+    curl -fsSL -o "${TMPDIR_PODS}/local-path-storage.yaml" \
         "https://raw.githubusercontent.com/rancher/local-path-provisioner/${LOCAL_PATH_VERSION}/deploy/local-path-storage.yaml"
+    echo "${LOCAL_PATH_SHA256}  ${TMPDIR_PODS}/local-path-storage.yaml" | sha256sum -c -
+    kubectl apply -f "${TMPDIR_PODS}/local-path-storage.yaml"
 
     kubectl patch storageclass local-path \
         -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
@@ -346,12 +404,96 @@ if [[ "$INSTALL_STORAGE" == "on" ]]; then
     log "local-path-provisioner installed (default StorageClass)"
 fi
 
-# --- 3. ingress-nginx ---
+# --- 3. CrowdSec ---
+# Deploy LAPI + Agent + AppSec BEFORE ingress-nginx so the decision engine is
+# running when the bouncer starts querying it.
+if [[ "$INSTALL_CROWDSEC" == "on" ]]; then
+    separator "Installing CrowdSec (LAPI + Agent + AppSec)"
+
+    helm repo add crowdsec https://crowdsecurity.github.io/helm-charts 2>/dev/null || true
+    helm repo update crowdsec
+
+    # Build enrollment section conditionally
+    CROWDSEC_ENROLL=""
+    if [[ -n "$CROWDSEC_ENROLL_KEY" ]]; then
+        CROWDSEC_ENROLL="
+    - name: ENROLL_KEY
+      value: \"${CROWDSEC_ENROLL_KEY}\"
+    - name: ENROLL_INSTANCE_NAME
+      value: \"$(hostname -f)\""
+    fi
+
+    cat > "${TMPDIR_PODS}/crowdsec-values.yaml" <<EOF
+container_runtime: containerd
+
+agent:
+  acquisition:
+    - namespace: ingress-nginx
+      podName: ingress-nginx-controller-*
+      program: nginx
+  env:
+    - name: COLLECTIONS
+      value: "crowdsecurity/nginx"
+
+lapi:
+  env:
+    - name: BOUNCER_KEY_ingress
+      value: "${CROWDSEC_BOUNCER_KEY}"${CROWDSEC_ENROLL}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+appsec:
+  enabled: true
+  acquisitions:
+    - appsec_configs:
+        - crowdsecurity/appsec-default
+      labels:
+        type: appsec
+      listen_addr: 0.0.0.0:7422
+      path: /
+      source: appsec
+  env:
+    - name: COLLECTIONS
+      value: "crowdsecurity/appsec-virtual-patching crowdsecurity/appsec-generic-rules"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+EOF
+
+    helm upgrade --install crowdsec crowdsec/crowdsec \
+        --namespace crowdsec \
+        --create-namespace \
+        --version "$CROWDSEC_VERSION" \
+        -f "${TMPDIR_PODS}/crowdsec-values.yaml"
+
+    log "CrowdSec installed (LAPI + Agent + AppSec)"
+fi
+
+# --- 4. ingress-nginx ---
 if [[ "$INSTALL_INGRESS" == "on" ]]; then
     separator "Installing ingress-nginx"
 
     helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx 2>/dev/null || true
-    helm repo update
+    helm repo update ingress-nginx
+
+    # Pre-flight: the DaemonSet nodeSelector requires this label. If no nodes
+    # have it, 0 ingress pods are scheduled — no error, just no ingress.
+    WORKER_COUNT=$(kubectl get nodes -l node-role.kubernetes.io/worker=worker --no-headers 2>/dev/null | wc -l)
+    if [[ "$WORKER_COUNT" -eq 0 ]]; then
+        warn "No nodes have label node-role.kubernetes.io/worker=worker"
+        warn "ingress-nginx DaemonSet will schedule 0 pods!"
+        warn "Label workers: kubectl label node <name> node-role.kubernetes.io/worker=worker"
+        if ! ask_yesno "Continue anyway?" "n"; then
+            exit 1
+        fi
+    fi
 
     # --- ingress-nginx values explained ---
     #
@@ -398,8 +540,72 @@ if [[ "$INSTALL_INGRESS" == "on" ]]; then
     #
     # Resource limits 256Mi — caps memory to prevent runaway growth from large
     # request buffering.
+
+    # CrowdSec bouncer integration: swap controller image to include Lua,
+    # inject bouncer plugin via init container, configure LAPI connection.
+    CROWDSEC_IMAGE=""
+    CROWDSEC_VOLUMES=""
+    CROWDSEC_INIT=""
+    CROWDSEC_MOUNTS=""
+    CROWDSEC_CONFIG=""
+    if [[ "$INSTALL_CROWDSEC" == "on" ]]; then
+        CROWDSEC_IMAGE="
+  image:
+    registry: docker.io
+    image: crowdsecurity/controller
+    tag: \"${CROWDSEC_CONTROLLER_TAG}\"
+    digest: \"${CROWDSEC_CONTROLLER_DIGEST}\""
+
+        CROWDSEC_VOLUMES="
+  extraVolumes:
+    - name: crowdsec-bouncer-plugin
+      emptyDir: {}"
+
+        CROWDSEC_INIT="
+  extraInitContainers:
+    - name: init-clone-crowdsec-bouncer
+      image: crowdsecurity/lua-bouncer-plugin
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: API_URL
+          value: \"http://crowdsec-service.crowdsec.svc.cluster.local:8080\"
+        - name: API_KEY
+          value: \"${CROWDSEC_BOUNCER_KEY}\"
+        - name: BOUNCER_CONFIG
+          value: \"/crowdsec/crowdsec-bouncer.conf\"
+        - name: APPSEC_URL
+          value: \"http://crowdsec-appsec-service.crowdsec.svc.cluster.local:7422\"
+        - name: APPSEC_FAILURE_ACTION
+          value: \"passthrough\"
+        - name: APPSEC_CONNECT_TIMEOUT
+          value: \"100\"
+        - name: APPSEC_SEND_TIMEOUT
+          value: \"100\"
+        - name: APPSEC_PROCESS_TIMEOUT
+          value: \"1000\"
+        - name: ALWAYS_SEND_TO_APPSEC
+          value: \"false\"
+      command: ['sh', '-c', 'sh /docker_start.sh; mkdir -p /lua_plugins/crowdsec/; cp -R /crowdsec/* /lua_plugins/crowdsec/']
+      volumeMounts:
+        - name: crowdsec-bouncer-plugin
+          mountPath: /lua_plugins"
+
+        CROWDSEC_MOUNTS="
+  extraVolumeMounts:
+    - name: crowdsec-bouncer-plugin
+      mountPath: /etc/nginx/lua/plugins/crowdsec
+      subPath: crowdsec"
+
+        CROWDSEC_CONFIG="
+    plugins: \"crowdsec\"
+    lua-shared-dicts: \"crowdsec_cache: 50m\"
+    server-snippet: |
+      lua_ssl_trusted_certificate \"/etc/ssl/certs/ca-certificates.crt\";
+      resolver local=on ipv6=off;"
+    fi
+
     cat > "${TMPDIR_PODS}/ingress-nginx-values.yaml" <<EOF
-controller:
+controller:${CROWDSEC_IMAGE}
   kind: DaemonSet
   hostPort:
     enabled: true
@@ -426,7 +632,7 @@ controller:
       \$status \$body_bytes_sent "\$http_referer" "\$http_user_agent"
       \$request_length \$request_time
       [\$proxy_upstream_name] \$upstream_addr
-      \$upstream_response_length \$upstream_response_time \$upstream_status \$req_id
+      \$upstream_response_length \$upstream_response_time \$upstream_status \$req_id${CROWDSEC_CONFIG}
   admissionWebhooks:
     enabled: true
   metrics:
@@ -439,12 +645,15 @@ controller:
       cpu: 100m
       memory: 128Mi
     limits:
-      memory: 256Mi
+      # No CPU limit: CFS throttling on an ingress controller causes latency
+      # spikes under load. CPU request ensures scheduling; bursting is preferred.
+      memory: 256Mi${CROWDSEC_VOLUMES}${CROWDSEC_INIT}${CROWDSEC_MOUNTS}
 EOF
 
     helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
         --namespace ingress-nginx \
         --create-namespace \
+        --version "$INGRESS_NGINX_VERSION" \
         -f "${TMPDIR_PODS}/ingress-nginx-values.yaml"
 
     log "ingress-nginx installed"
@@ -461,12 +670,12 @@ EOF
     ask_yesno "Press Y when Proxy Protocol is enabled on LB (or skip)" "n" || true
 fi
 
-# --- 4. cert-manager ---
+# --- 5. cert-manager ---
 if [[ "$INSTALL_CERTMGR" == "on" ]]; then
     separator "Installing cert-manager"
 
     helm repo add jetstack https://charts.jetstack.io 2>/dev/null || true
-    helm repo update
+    helm repo update jetstack
 
     # crds.enabled=true installs Custom Resource Definitions (Certificate,
     # ClusterIssuer, etc.) as part of the Helm chart, avoiding a separate
@@ -474,19 +683,18 @@ if [[ "$INSTALL_CERTMGR" == "on" ]]; then
     helm upgrade --install cert-manager jetstack/cert-manager \
         --namespace cert-manager \
         --create-namespace \
+        --version "$CERT_MANAGER_VERSION" \
         --set crds.enabled=true \
         --set resources.requests.cpu=50m \
-        --set resources.requests.memory=64Mi
+        --set resources.requests.memory=64Mi \
+        --wait --timeout 300s
 
     log "cert-manager installed"
 
-    # cert-manager's validating webhook must be running before creating
-    # ClusterIssuers, otherwise the apply fails with a webhook connection error.
-    # The sleep 30 fallback covers cases where kubectl wait times out but the
-    # webhook is actually ready (condition not yet reported by the API server).
-    info "Waiting for cert-manager webhook to be ready..."
-    kubectl wait --for=condition=available deployment/cert-manager-webhook \
-        -n cert-manager --timeout=120s 2>/dev/null || sleep 30
+    # Helm --wait ensures all pods are ready, but the webhook needs a few
+    # extra seconds to register its API service endpoint with the API server.
+    info "Waiting for cert-manager webhook to register..."
+    sleep 10
 
     # ClusterIssuer (not Issuer): works across ALL namespaces, so one issuer
     # serves the whole cluster. Uses ACME HTTP-01 solver, which proves domain
@@ -536,7 +744,7 @@ EOF
     fi
 fi
 
-# --- 5. Monitoring ---
+# --- 6. Monitoring ---
 # kube-prometheus-stack is a meta-chart bundling: Prometheus (metrics collection),
 # Grafana (dashboards), Alertmanager (alert routing), node-exporter (host metrics),
 # and kube-state-metrics (Kubernetes object metrics).
@@ -544,7 +752,7 @@ if [[ "$INSTALL_MONITORING" == "on" ]]; then
     separator "Installing Monitoring (Prometheus + Grafana + Alertmanager)"
 
     helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
-    helm repo update
+    helm repo update prometheus-community
 
     # Build Grafana ingress section conditionally.
     # The cert-manager.io/cluster-issuer annotation auto-provisions a TLS
@@ -608,6 +816,7 @@ prometheus:
     storageSpec:
       volumeClaimTemplate:
         spec:
+          storageClassName: local-path
           accessModes: ["ReadWriteOnce"]
           resources:
             requests:
@@ -626,6 +835,7 @@ alertmanager:
     storage:
       volumeClaimTemplate:
         spec:
+          storageClassName: local-path
           accessModes: ["ReadWriteOnce"]
           resources:
             requests:
@@ -641,6 +851,7 @@ grafana:
   adminPassword: "${GRAFANA_PASSWORD}"
   persistence:
     enabled: true
+    storageClassName: local-path
     size: 10Gi${GRAFANA_INGRESS}
   resources:
     requests:
@@ -676,6 +887,7 @@ EOF
     helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
         --namespace monitoring \
         --create-namespace \
+        --version "$KUBE_PROM_STACK_VERSION" \
         -f "${TMPDIR_PODS}/monitoring-values.yaml"
 
     CREDENTIALS["Grafana URL"]="https://${GRAFANA_HOST}"
@@ -685,7 +897,7 @@ EOF
     log "Monitoring stack installed"
 fi
 
-# --- 6. Logging ---
+# --- 7. Logging ---
 # Loki + Promtail: Loki stores logs, Promtail ships them from every node.
 # Both deployed in the monitoring namespace, co-located with Prometheus/Grafana
 # for simplified network policies and service discovery.
@@ -693,7 +905,7 @@ if [[ "$INSTALL_LOGGING" == "on" ]]; then
     separator "Installing Logging (Loki + Promtail)"
 
     helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
-    helm repo update
+    helm repo update grafana
 
     # --- Loki values explained ---
     #
@@ -741,6 +953,7 @@ loki:
           period: 24h
   persistence:
     enabled: true
+    storageClassName: local-path
     size: ${LOKI_STORAGE}
   gateway:
     enabled: false
@@ -750,40 +963,51 @@ EOF
 
     helm upgrade --install loki grafana/loki \
         --namespace monitoring \
+        --version "$LOKI_VERSION" \
         -f "${TMPDIR_PODS}/loki-values.yaml"
 
     # Promtail: DaemonSet that runs on every node, tails container log files
     # from /var/log/pods, and pushes them to Loki.
-    # config.clients[0].url uses the Kubernetes DNS name "loki" in the same
-    # namespace (monitoring) for service discovery.
+    cat > "${TMPDIR_PODS}/promtail-values.yaml" <<EOF
+config:
+  clients:
+    - url: http://loki:3100/loki/api/v1/push
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 128Mi
+EOF
+
     helm upgrade --install promtail grafana/promtail \
         --namespace monitoring \
-        --set "config.clients[0].url=http://loki:3100/loki/api/v1/push"
+        --version "$PROMTAIL_VERSION" \
+        -f "${TMPDIR_PODS}/promtail-values.yaml"
 
     log "Loki + Promtail installed"
 fi
 
-# --- 7. Rancher ---
+# --- 8. Rancher ---
 if [[ "$INSTALL_RANCHER" == "on" ]]; then
     separator "Installing Rancher"
 
     # rancher-stable: production-grade releases only (vs rancher-latest which
     # includes release candidates)
     helm repo add rancher-stable https://releases.rancher.com/server-charts/stable 2>/dev/null || true
-    helm repo update
+    helm repo update rancher-stable
 
-    # ingress.tls.source=letsEncrypt — uses cert-manager to auto-provision TLS
-    # via Let's Encrypt (requires cert-manager + ingress-nginx installed above).
+    # ingress.tls.source=secret — use the ClusterIssuer created by cert-manager
+    # (installed earlier) instead of Rancher's built-in Let's Encrypt integration.
+    # This avoids duplicate issuers and rate-limit contention.
     # cattle-system: Rancher's conventional namespace.
     cat > "${TMPDIR_PODS}/rancher-values.yaml" <<EOF
 hostname: "${RANCHER_HOST}"
 ingress:
   tls:
-    source: letsEncrypt
-letsEncrypt:
-  email: "${CERT_EMAIL}"
-  ingress:
-    class: nginx
+    source: secret
+  extraAnnotations:
+    cert-manager.io/cluster-issuer: "${RANCHER_ISSUER}"
 replicas: ${RANCHER_REPLICAS}
 bootstrapPassword: "${RANCHER_PASSWORD}"
 resources:
@@ -797,12 +1021,78 @@ EOF
     helm upgrade --install rancher rancher-stable/rancher \
         --namespace cattle-system \
         --create-namespace \
+        --version "$RANCHER_VERSION" \
         -f "${TMPDIR_PODS}/rancher-values.yaml"
 
     CREDENTIALS["Rancher URL"]="https://${RANCHER_HOST}"
     CREDENTIALS["Rancher password"]="${RANCHER_PASSWORD}"
 
     log "Rancher installed"
+fi
+
+# =============================================================================
+# Post-Deployment Hardening
+# =============================================================================
+
+# --- Pod Security Standards ---
+# baseline: blocks known privilege escalations (hostPID, privileged containers)
+# restricted (warn only): flags non-root, read-only rootfs violations without blocking
+separator "Pod Security Standards"
+for ns in monitoring ingress-nginx cert-manager cattle-system crowdsec; do
+    if kubectl get namespace "$ns" &>/dev/null; then
+        kubectl label namespace "$ns" \
+            pod-security.kubernetes.io/enforce=baseline \
+            pod-security.kubernetes.io/warn=restricted \
+            --overwrite
+    fi
+done
+log "Pod Security Standards labels applied"
+
+# --- Network Policies ---
+# Default-deny ingress + selective allow: prevents lateral movement between
+# namespaces while allowing monitoring components to communicate.
+if [[ "$INSTALL_MONITORING" == "on" || "$INSTALL_LOGGING" == "on" ]]; then
+    separator "Network Policies (monitoring)"
+    kubectl apply -f - <<'EOPOLICY'
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: monitoring
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-monitoring
+  namespace: monitoring
+spec:
+  podSelector: {}
+  ingress:
+    - from:
+        - podSelector: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-grafana-from-ingress
+  namespace: monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 3000
+EOPOLICY
+    log "Network policies applied (monitoring namespace)"
 fi
 
 # =============================================================================
@@ -831,6 +1121,7 @@ info "Next steps:"
 [[ "$INSTALL_CERTMGR" == "on" ]] && info "  - Verify ClusterIssuers: kubectl get clusterissuer"
 [[ "$INSTALL_MONITORING" == "on" ]] && info "  - Access Grafana: https://${GRAFANA_HOST}"
 [[ "$INSTALL_RANCHER" == "on" ]] && info "  - Access Rancher: https://${RANCHER_HOST}"
+[[ "$INSTALL_CROWDSEC" == "on" ]] && info "  - Verify CrowdSec: kubectl -n crowdsec exec deploy/crowdsec-lapi -- cscli metrics"
 info "  - Deploy customer namespaces with network policies"
 info "  - Switch Grafana to letsencrypt-prod when ready"
 
