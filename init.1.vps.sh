@@ -87,6 +87,10 @@ source "${SCRIPT_DIR}/lib.sh"
 require_root
 require_ubuntu
 
+# Ensure tmux is available for session protection (idempotent)
+apt-get install -y -qq tmux 2>/dev/null || true
+ensure_tmux "$@"
+
 banner "OS Hardening — init.vps.sh" "Ubuntu ${UBUNTU_VERSION}"
 
 # =============================================================================

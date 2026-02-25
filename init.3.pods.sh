@@ -79,6 +79,7 @@ CROWDSEC_CONTROLLER_DIGEST="sha256:4575be24781cad35f8e58437db6a3f492df2a3167fed2
 # Preflight
 # =============================================================================
 require_root
+ensure_tmux "$@"
 
 banner "Platform Stack — init.pods.sh"
 

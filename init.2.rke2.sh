@@ -60,6 +60,7 @@ source "${SCRIPT_DIR}/lib.sh"
 # =============================================================================
 require_root
 require_ubuntu
+ensure_tmux "$@"
 
 banner "RKE2 Installation — init.rke2.sh" "Ubuntu ${UBUNTU_VERSION}"
 

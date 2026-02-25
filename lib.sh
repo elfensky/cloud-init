@@ -45,6 +45,7 @@
 #   require_root                            Exits if not root
 #   require_ubuntu                          Exits if not Ubuntu; sets UBUNTU_VERSION
 #   require_cmd CMD                         Returns 1 if CMD is not in PATH
+#   ensure_tmux                             Re-launches script inside tmux (if available)
 #   generate_token                          Prints 64 hex chars (256-bit random token) to stdout
 #   test_tcp_connectivity HOST PORT [T]     Returns 0 if TCP connection succeeds within T seconds
 # =============================================================================
@@ -398,6 +399,30 @@ require_cmd() {
         err "Required command not found: ${cmd}"
         return 1
     fi
+}
+
+# Re-launch the current script inside a tmux session for SSH disconnect
+# protection. Long-running operations (apt upgrade, RKE2 start, Helm installs)
+# survive connection drops when wrapped in tmux. The operator can reattach with
+# `tmux attach -t <session>` after reconnecting.
+ensure_tmux() {
+    # Already inside tmux — nothing to do
+    [[ -n "${TMUX:-}" ]] && return 0
+
+    # tmux not available — warn and continue unprotected
+    if ! command -v tmux &>/dev/null; then
+        warn "tmux is not installed — running without session protection."
+        warn "If disconnected, this script will be terminated."
+        return 0
+    fi
+
+    # Derive session name from script filename: init.1.vps.sh → init-1-vps
+    local session_name
+    session_name="$(basename "$0" .sh | tr '.' '-')"
+
+    log "Re-launching inside tmux session '${session_name}'"
+    info "  If disconnected, reattach with: tmux attach -t ${session_name}"
+    exec tmux new-session -s "$session_name" -- "$0" "$@"
 }
 
 # 256 bits of entropy (32 hex bytes = 64 hex chars) — sufficient for cluster
