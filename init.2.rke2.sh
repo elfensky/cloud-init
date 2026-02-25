@@ -67,11 +67,9 @@ banner "RKE2 Installation — init.rke2.sh" "Ubuntu ${UBUNTU_VERSION}"
 # init.1.vps.sh sets this when the "Kubernetes node" purpose is selected.
 # Without it, pods on different nodes cannot communicate.
 if [[ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)" != "1" ]]; then
-    warn "net.ipv4.ip_forward is not enabled!"
-    warn "Run init.vps.sh with 'Kubernetes node' purpose first."
-    if ! ask_yesno "Continue anyway?" "n"; then
-        exit 1
-    fi
+    err "net.ipv4.ip_forward is not enabled."
+    err "Run init.vps.sh with 'Kubernetes node' purpose first."
+    exit 1
 fi
 
 # Detect the private network interface (e.g., enp7s0 on Hetzner) and extract
@@ -140,7 +138,7 @@ if [[ "$NODE_ROLE" -eq 1 ]]; then
     echo ""
     warn "═══════════════════════════════════════════════════════════════"
     warn "  SAVE THIS TOKEN — you need it to join other nodes:"
-    warn "  ${CLUSTER_TOKEN}"
+    warn "  ${CLUSTER_TOKEN:0:16}..."
     warn "═══════════════════════════════════════════════════════════════"
     echo ""
 else
@@ -156,6 +154,18 @@ SERVER_URL=""
 if [[ "$NODE_ROLE" -ne 1 ]]; then
     ask_input "Server URL (e.g. https://10.0.0.8:6443)" "" '^https://'
     SERVER_URL="$REPLY"
+
+    # Verify API server reachability before proceeding with installation.
+    # A bad URL causes a silent 300s timeout during systemctl start.
+    _hostport="${SERVER_URL#https://}"
+    _hostport="${_hostport%%/*}"
+    _srv_host="${_hostport%:*}"
+    _srv_port="${_hostport#*:}"
+    if ! test_tcp_connectivity "$_srv_host" "$_srv_port"; then
+        err "Cannot reach ${_srv_host}:${_srv_port} — verify URL and firewall."
+        exit 1
+    fi
+    log "API server reachable at ${_srv_host}:${_srv_port}"
 fi
 
 # --- Step 6: TLS SANs (server roles only) ---
@@ -244,7 +254,7 @@ fi
 # or VPC (e.g., the private network already uses 10.42.x.x).
 POD_CIDR="10.42.0.0/16"
 SVC_CIDR="10.43.0.0/16"
-ETCD_METRICS="true"
+ETCD_METRICS="false"
 AUDIT_LOG="y"
 RKE2_CHANNEL=""
 
@@ -264,9 +274,10 @@ if ask_yesno "Configure advanced options?" "n"; then
     fi
 
     # etcd metrics expose a /metrics endpoint for Prometheus scraping.
-    # Disable if no monitoring stack is planned.
-    if ! ask_yesno "Expose etcd metrics?" "y"; then
-        ETCD_METRICS="false"
+    # Disabled by default: leaks cluster topology without authentication.
+    # Enable when deploying a monitoring stack with mTLS scraping.
+    if ask_yesno "Expose etcd metrics?" "n"; then
+        ETCD_METRICS="true"
     fi
 
     # API server audit logging writes a request audit trail for security
@@ -332,6 +343,7 @@ log "Hostname: ${NODE_HOSTNAME}"
 # It is written idempotently via cat > (overwrite, never append).
 separator "RKE2 Config"
 mkdir -p /etc/rancher/rke2
+chmod 700 /etc/rancher/rke2
 
 {
     if [[ "$NODE_ROLE" -eq 3 ]]; then
@@ -341,8 +353,15 @@ mkdir -p /etc/rancher/rke2
 token: "${CLUSTER_TOKEN}"
 server: "${SERVER_URL}"
 node-ip: "${NODE_IP}"
+profile: "cis"
+protect-kernel-defaults: true
 kubelet-arg:
   - "node-ip=${NODE_IP}"
+  - "streaming-connection-idle-timeout=5m"
+  - "make-iptables-util-chains=true"
+  - "rotate-certificates=true"
+  - "container-log-max-size=50Mi"
+  - "container-log-max-files=5"
 CFGEOF
     else
         # Server config: bind-address and advertise-address are pinned to the
@@ -363,6 +382,8 @@ CFGEOF
 node-ip: "${NODE_IP}"
 bind-address: "${NODE_IP}"
 advertise-address: "${NODE_IP}"
+node-taint:
+  - "node-role.kubernetes.io/control-plane:NoSchedule"
 CFGEOF
 
         # TLS SANs are added to the API server's self-signed certificate.
@@ -376,6 +397,11 @@ CFGEOF
         fi
 
         echo "cni: ${CNI}"
+        # CIS hardening: encrypts secrets at rest in etcd, enforces Pod Security
+        # Standards, and prevents kubelet from silently modifying kernel parameters.
+        echo "secrets-encryption: true"
+        echo 'profile: "cis"'
+        echo "protect-kernel-defaults: true"
         echo ""
 
         # kubelet-arg node-ip forces kubelet to register with the private IP.
@@ -384,7 +410,20 @@ CFGEOF
         cat <<CFGEOF
 kubelet-arg:
   - "node-ip=${NODE_IP}"
+  - "streaming-connection-idle-timeout=5m"
+  - "make-iptables-util-chains=true"
+  - "rotate-certificates=true"
+  - "container-log-max-size=50Mi"
+  - "container-log-max-files=5"
 etcd-expose-metrics: ${ETCD_METRICS}
+CFGEOF
+
+        # TLS 1.2 floor and AEAD-only cipher suites for all control-plane components.
+        # Explicit config satisfies CIS 1.2.25 and prevents downgrades across updates.
+        cat <<'CFGEOF'
+kube-apiserver-arg:
+  - "tls-min-version=VersionTLS12"
+  - "tls-cipher-suites=TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305"
 CFGEOF
 
         # Audit logging records API server requests (who, what, when) for
@@ -392,13 +431,20 @@ CFGEOF
         # for up to 30 days.
         if [[ "$AUDIT_LOG" == "y" ]]; then
             cat <<'CFGEOF'
-kube-apiserver-arg:
   - "audit-log-path=/var/lib/rancher/rke2/server/logs/audit.log"
   - "audit-log-maxage=30"
   - "audit-log-maxbackup=10"
   - "audit-log-maxsize=100"
+  - "audit-policy-file=/etc/rancher/rke2/audit-policy.yaml"
 CFGEOF
         fi
+
+        cat <<'CFGEOF'
+kube-controller-manager-arg:
+  - "tls-min-version=VersionTLS12"
+kube-scheduler-arg:
+  - "tls-min-version=VersionTLS12"
+CFGEOF
 
         # Custom CIDRs are only written when they differ from RKE2 defaults.
         # This keeps config.yaml clean and makes it obvious when non-standard
@@ -411,12 +457,56 @@ CFGEOF
         fi
     fi
 } > /etc/rancher/rke2/config.yaml
+chmod 600 /etc/rancher/rke2/config.yaml
 
 log "config.yaml written to /etc/rancher/rke2/config.yaml"
 echo ""
 info "Contents:"
 cat /etc/rancher/rke2/config.yaml
 echo ""
+
+# --- Audit policy ---
+# The audit policy defines which API requests are logged and at what detail
+# level. Without it, audit-log-path produces an empty file (kube-apiserver
+# default is to log nothing). This policy logs all requests at Metadata level
+# (who/what/when) while skipping high-volume health probes and events.
+if [[ "$AUDIT_LOG" == "y" && "$NODE_ROLE" -le 2 ]]; then
+    cat > /etc/rancher/rke2/audit-policy.yaml <<'AUDITEOF'
+apiVersion: audit.k8s.io/v1
+kind: Policy
+rules:
+  # Health/readiness probes generate thousands of entries per hour — skip them.
+  - level: None
+    nonResourceURLs:
+      - "/healthz*"
+      - "/livez*"
+      - "/readyz*"
+      - "/version"
+  # Event objects are high-volume and rarely security-relevant.
+  - level: None
+    resources:
+      - group: ""
+        resources: ["events"]
+  # Secret and ConfigMap access is security-sensitive — log at Metadata level.
+  - level: Metadata
+    resources:
+      - group: ""
+        resources: ["secrets", "configmaps"]
+  # Authentication and authorization decisions.
+  - level: Metadata
+    resources:
+      - group: "authentication.k8s.io"
+        resources: ["tokenreviews"]
+      - group: "authorization.k8s.io"
+        resources: ["subjectaccessreviews"]
+  # Everything else: log who/what/when (not request/response bodies).
+  - level: Metadata
+    omitStages:
+      - RequestReceived
+AUDITEOF
+    chmod 600 /etc/rancher/rke2/audit-policy.yaml
+    log "Audit policy written to /etc/rancher/rke2/audit-policy.yaml"
+fi
 
 # --- 3. HelmChartConfig for WireGuard (bootstrap only) ---
 # HelmChartConfig is an RKE2-specific CRD. YAML files placed in
@@ -426,6 +516,7 @@ echo ""
 if [[ "$WIREGUARD" == "y" && "$NODE_ROLE" -eq 1 ]]; then
     MANIFESTS_DIR="/var/lib/rancher/rke2/server/manifests"
     mkdir -p "$MANIFESTS_DIR"
+    chmod 700 "$MANIFESTS_DIR"
 
     case "$CNI" in
         cilium)
@@ -491,13 +582,21 @@ if [[ -n "$RKE2_CHANNEL" ]]; then
 fi
 
 info "Installing RKE2..."
-# env "VAR=val" sh — passes environment variables to the piped installer script.
+# Download installer to temp file instead of piping to shell (NIST SI-7).
+# Prevents MITM execution and creates an audit trail via sha256 checksum.
+# The installer itself verifies the RKE2 binary it downloads.
+INSTALLER_TMP="$(mktemp)"
+trap 'rm -f "$INSTALLER_TMP"' EXIT
+curl --proto '=https' --tlsv1.2 -sfL https://get.rke2.io -o "$INSTALLER_TMP"
+log "Installer sha256: $(sha256sum "$INSTALLER_TMP" | cut -d' ' -f1)"
+
 if [[ ${#INSTALL_ARGS[@]} -gt 0 ]]; then
-    curl -sfL https://get.rke2.io | env "${INSTALL_ARGS[@]}" sh -
+    env "${INSTALL_ARGS[@]}" bash "$INSTALLER_TMP"
 else
-    curl -sfL https://get.rke2.io | sh -
+    bash "$INSTALLER_TMP"
 fi
 log "RKE2 installed"
+info "Installed: $(/usr/local/bin/rke2 --version 2>/dev/null | head -1 || echo 'version unknown')"
 
 # --- 5. Enable + start ---
 separator "Starting RKE2"
@@ -551,12 +650,28 @@ PROFILEEOF
     # every node simultaneously — applying it early causes connection failures
     # on nodes that haven't installed WireGuard kernel modules yet.
     if [[ "$WIREGUARD" == "y" && "$CNI" == "calico" ]]; then
+        # Write convenience script so the operator doesn't need to remember
+        # the kubectl patch command. chmod 700 = root-only execution.
+        cat > /usr/local/bin/rke2-enable-wireguard <<'WGEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+export PATH=$PATH:/var/lib/rancher/rke2/bin
+echo "Enabling Calico WireGuard encryption..."
+kubectl patch felixconfiguration default --type=merge \
+  -p '{"spec":{"wireguardEnabled":true}}'
+echo "Done. Verify: kubectl get felixconfiguration default -o jsonpath='{.spec.wireguardEnabled}'"
+WGEOF
+        chmod 700 /usr/local/bin/rke2-enable-wireguard
+
         echo ""
         warn "═══════════════════════════════════════════════════════════════"
-        warn "  CALICO WIREGUARD — Run this AFTER all nodes have joined:"
+        warn "  CALICO WIREGUARD — AFTER all nodes have joined, run:"
         warn ""
-        warn "  kubectl patch felixconfiguration default --type=merge -p \\"
-        warn "    '{\"spec\":{\"wireguardEnabled\":true}}'"
+        warn "    rke2-enable-wireguard"
+        warn ""
+        warn "  Applying before all nodes join causes connection failures"
+        warn "  on nodes without WireGuard kernel modules."
         warn "═══════════════════════════════════════════════════════════════"
         echo ""
     fi

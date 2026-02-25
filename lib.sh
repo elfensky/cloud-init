@@ -46,6 +46,7 @@
 #   require_ubuntu                          Exits if not Ubuntu; sets UBUNTU_VERSION
 #   require_cmd CMD                         Returns 1 if CMD is not in PATH
 #   generate_token                          Prints 64 hex chars (256-bit random token) to stdout
+#   test_tcp_connectivity HOST PORT [T]     Returns 0 if TCP connection succeeds within T seconds
 # =============================================================================
 
 # Guard against double-sourcing
@@ -403,6 +404,15 @@ require_cmd() {
 # authentication tokens. Requires openssl in PATH.
 generate_token() {
     openssl rand -hex 32
+}
+
+# Returns 0 if a TCP connection to host:port succeeds within the timeout.
+# Uses bash built-in /dev/tcp to avoid requiring nc/ncat/nmap dependencies.
+test_tcp_connectivity() {
+    local host="$1"
+    local port="$2"
+    local tout="${3:-5}"
+    timeout "$tout" bash -c "echo > /dev/tcp/${host}/${port}" 2>/dev/null
 }
 
 # =============================================================================
