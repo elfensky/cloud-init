@@ -329,6 +329,7 @@ if [[ "$CREATE_USER" == "y" ]]; then
     else
         adduser --disabled-password --gecos "" "$NEW_USER"
         log "User '${NEW_USER}' created."
+        passwd "$NEW_USER"
     fi
 
     usermod -aG sudo "$NEW_USER"
