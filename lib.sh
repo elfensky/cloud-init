@@ -146,27 +146,37 @@ ask_choice() {
 }
 
 # ask_yesno "prompt" default(y/n)
-# Returns 0 for yes, 1 for no. The hint string capitalizes the default.
+# Returns 0 for yes, 1 for no. Presents a numbered menu like ask_choice.
 ask_yesno() {
     local prompt="$1"
     local default="${2:-n}"
 
-    local hint
+    # Map y/n default to a 1-based menu index.
+    local default_num=2
     if [[ "$default" == "y" ]]; then
-        hint="Y/n"
-    else
-        hint="y/N"
+        default_num=1
     fi
 
-    # ${input,,} lowercases the response to accept Y/Yes/YES uniformly.
+    local marker_yes="" marker_no=""
+    if [[ "$default_num" -eq 1 ]]; then
+        marker_yes=" [default]"
+    else
+        marker_no=" [default]"
+    fi
+
+    echo ""
+    echo -e "${BOLD}${prompt}${NC}"
+    printf "  ${BOLD}1)${NC} Yes%s\n" "$marker_yes"
+    printf "  ${BOLD}2)${NC} No%s\n" "$marker_no"
+
     local input
     while true; do
-        read -rp "${prompt} (${hint}): " input
-        input="${input:-$default}"
-        case "${input,,}" in
-            y|yes) return 0 ;;
-            n|no)  return 1 ;;
-            *) err "Please answer y or n." ;;
+        read -rp "Choice [${default_num}]: " input
+        input="${input:-$default_num}"
+        case "$input" in
+            1) return 0 ;;
+            2) return 1 ;;
+            *) err "Invalid choice. Enter 1 or 2." ;;
         esac
     done
 }
