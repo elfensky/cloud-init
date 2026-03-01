@@ -287,7 +287,10 @@ if ask_yesno "Configure advanced options?" "n"; then
         AUDIT_LOG="n"
     fi
 
-    read -rp "RKE2 channel (e.g. stable, latest, v1.28) [default]: " RKE2_CHANNEL
+    ask_input "RKE2 channel (e.g. stable, latest, v1.28)" "stable"
+    RKE2_CHANNEL="$REPLY"
+    # "stable" is the installer's own default, so treat it the same as empty.
+    [[ "$RKE2_CHANNEL" == "stable" ]] && RKE2_CHANNEL=""
 fi
 
 # --- Step 10: Confirmation ---
