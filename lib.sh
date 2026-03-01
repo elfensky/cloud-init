@@ -133,6 +133,7 @@ ask_choice() {
     done
 
     # Loop until a valid numeric choice is entered.
+    local input
     while true; do
         read -rp "Choice [${default}]: " input
         input="${input:-$default}"
@@ -158,6 +159,7 @@ ask_yesno() {
     fi
 
     # ${input,,} lowercases the response to accept Y/Yes/YES uniformly.
+    local input
     while true; do
         read -rp "${prompt} (${hint}): " input
         input="${input:-$default}"
@@ -181,6 +183,7 @@ ask_input() {
         display_default=" [${default}]"
     fi
 
+    local input
     while true; do
         read -rp "${prompt}${display_default}: " input
         input="${input:-$default}"
@@ -244,6 +247,7 @@ ask_multiselect() {
     local count=${#labels[@]}
 
     # Re-render the full list on each iteration so the [x] marks stay current.
+    local input
     while true; do
         echo ""
         echo -e "${BOLD}${prompt}${NC}"
