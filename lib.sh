@@ -274,6 +274,8 @@ ask_multiselect() {
 
         # Empty input = user is done selecting; export current states.
         if [[ -z "$input" ]]; then
+            # Used by callers after sourcing lib.sh.
+            # shellcheck disable=SC2034
             MULTISELECT_RESULT=("${states[@]}")
             return 0
         fi
@@ -282,9 +284,9 @@ ask_multiselect() {
         if [[ "$input" =~ ^[0-9]+$ ]] && (( input >= 1 && input <= count )); then
             local idx=$((input - 1))
             if [[ "${states[$idx]}" == "on" ]]; then
-                states[$idx]="off"
+                states[idx]="off"
             else
-                states[$idx]="on"
+                states[idx]="on"
             fi
         else
             err "Enter a number between 1 and ${count}, or press Enter to confirm."
@@ -368,6 +370,7 @@ detect_public_iface() {
 # Ubuntu uses "ssh" as the service name, most other distros use "sshd".
 # We probe both via systemctl to stay portable.
 detect_ssh_service() {
+    export SSH_SERVICE
     if systemctl cat ssh.service &>/dev/null; then
         SSH_SERVICE="ssh"
     elif systemctl cat sshd.service &>/dev/null; then
@@ -404,6 +407,7 @@ require_ubuntu() {
         err "This script requires Ubuntu."
         exit 1
     fi
+    export UBUNTU_VERSION
     UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || echo "unknown")
 }
 
