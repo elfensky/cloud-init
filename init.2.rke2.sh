@@ -56,6 +56,35 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib.sh"
 
 # =============================================================================
+# Verification Helpers (use kubectl — script-specific, not for lib.sh)
+# =============================================================================
+
+# check_node_ready NODE — returns 0 if the node's Ready condition is "True"
+check_node_ready() {
+    local node="$1"
+    local status
+    status=$(kubectl get node "$node" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    [[ "$status" == "True" ]]
+}
+
+# check_system_pods — returns 0 if all kube-system pods are Running or Succeeded
+check_system_pods() {
+    local total not_ready
+    total=$(kubectl get pods -n kube-system --no-headers 2>/dev/null | wc -l)
+    (( total > 0 )) || return 1
+    not_ready=$(kubectl get pods -n kube-system --no-headers 2>/dev/null \
+        | grep -cvE 'Running|Completed|Succeeded') || true
+    (( not_ready == 0 ))
+}
+
+# check_agent_healthy — returns 0 if rke2-agent is active with no fatal/panic in last 30s
+check_agent_healthy() {
+    systemctl is-active --quiet rke2-agent || return 1
+    ! journalctl -u rke2-agent --since "30 seconds ago" --no-pager -q 2>/dev/null \
+        | grep -qiE 'fatal|panic'
+}
+
+# =============================================================================
 # Preflight
 # =============================================================================
 require_root
@@ -621,32 +650,58 @@ fi
 
 log "${RKE2_SERVICE} started"
 
-# Server nodes need extra settle time after systemd reports the unit as active.
-# The API server, etcd, and scheduler components are still initializing
-# internal state even though the process itself is running.
+# --- 6. Verification ---
+# Poll-based checks replace fixed sleeps. Each wait_for call is non-fatal
+# (|| true) because the cluster may still be converging — a timeout here
+# does not mean the install failed, just that it needs more time.
+separator "Verification"
+
 if [[ "$NODE_ROLE" -le 2 ]]; then
-    info "Waiting 30s for API server to settle..."
-    sleep 30
+    # Server roles: export kubectl path + kubeconfig for verification commands
+    export PATH=$PATH:/var/lib/rancher/rke2/bin
+    export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+fi
+
+if [[ "$NODE_ROLE" -eq 1 ]]; then
+    # Bootstrap: API server is starting from scratch — needs connectivity first,
+    # then node readiness, then kube-system pods (CNI, CoreDNS, etc.)
+    wait_for "kubectl connectivity"      60  5  kubectl get nodes || true
+    wait_for "${NODE_HOSTNAME} Ready"    120 10  check_node_ready "$NODE_HOSTNAME" || true
+    wait_for "kube-system pods running"  180 15  check_system_pods || true
+
+elif [[ "$NODE_ROLE" -eq 2 ]]; then
+    # Additional server: joining an existing cluster — API server comes up
+    # faster but node registration may take a moment
+    wait_for "kubectl connectivity"      90  5  kubectl get nodes || true
+    wait_for "${NODE_HOSTNAME} Ready"    120 10  check_node_ready "$NODE_HOSTNAME" || true
+
+elif [[ "$NODE_ROLE" -eq 3 ]]; then
+    # Worker: no kubectl available — verify the agent process is healthy
+    wait_for "rke2-agent stability"      30  10  check_agent_healthy || true
+fi
+
+# Visual confirmation for server roles
+if [[ "$NODE_ROLE" -le 2 ]]; then
+    echo ""
+    kubectl get nodes -o wide 2>/dev/null || true
+    echo ""
 fi
 
 # --- 7. Post-install ---
 separator "Post-Install"
 
-if [[ "$NODE_ROLE" -eq 1 ]]; then
-    # Set up kubectl for all users via profile.d (idempotent overwrite)
+if [[ "$NODE_ROLE" -le 2 ]]; then
+    # Set up kubectl for all users via profile.d (idempotent overwrite).
+    # Applied to all server roles, not just bootstrap — operators may SSH
+    # into any server node and expect kubectl to work immediately.
     cat > /etc/profile.d/rke2.sh <<'PROFILEEOF'
 export PATH=$PATH:/var/lib/rancher/rke2/bin
 export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
 PROFILEEOF
-
-    export PATH=$PATH:/var/lib/rancher/rke2/bin
-    export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
     chmod 600 /etc/rancher/rke2/rke2.yaml
+fi
 
-    info "Verifying cluster..."
-    sleep 10
-    kubectl get nodes 2>/dev/null || warn "kubectl not ready yet — check again in a minute."
-    echo ""
+if [[ "$NODE_ROLE" -eq 1 ]]; then
 
     # Calico WireGuard is enabled via a cluster-wide felixconfiguration patch.
     # It must wait until ALL nodes have joined because the setting applies to

@@ -48,6 +48,7 @@
 #   ensure_tmux                             Re-launches script inside tmux (if available)
 #   generate_token                          Prints 64 hex chars (256-bit random token) to stdout
 #   test_tcp_connectivity HOST PORT [T]     Returns 0 if TCP connection succeeds within T seconds
+#   wait_for DESC TIMEOUT INTERVAL CMD...  Poll CMD; return 0 on success, 1 on timeout
 # =============================================================================
 
 # Guard against double-sourcing
@@ -456,6 +457,26 @@ test_tcp_connectivity() {
     local port="$2"
     local tout="${3:-5}"
     timeout "$tout" bash -c "echo > /dev/tcp/${host}/${port}" 2>/dev/null
+}
+
+# Generic poll/retry helper. Runs CMD every INTERVAL seconds until it succeeds
+# (exit 0) or TIMEOUT seconds have elapsed. All CMD output is suppressed —
+# callers should rely on wait_for's own log/warn messages for status.
+wait_for() {
+    local desc="$1" timeout="$2" interval="$3"
+    shift 3
+    local elapsed=0
+    info "Waiting for ${desc} (timeout ${timeout}s)..."
+    while (( elapsed < timeout )); do
+        if "$@" &>/dev/null; then
+            log "${desc} — ready (${elapsed}s)"
+            return 0
+        fi
+        sleep "$interval"
+        elapsed=$(( elapsed + interval ))
+    done
+    warn "${desc} — not ready after ${timeout}s"
+    return 1
 }
 
 # =============================================================================
