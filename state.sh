@@ -51,20 +51,37 @@ state_init() {
     chmod 0600 "$STATE_FILE"
 }
 
-# Source answers from a user-provided file (pre-seed state). Values override
+# Load answers from a user-provided file (pre-seed state). Values override
 # anything already in state.env. Used for headless/cloud-init invocation:
 #   main.sh --answers /root/answers.env
+#
+# The file is parsed as KEY=VALUE line-by-line; it is NEVER sourced. An
+# earlier implementation used `source` and was an arbitrary-code-execution
+# sink (CWE-94) because any bash in the file would run as root before any
+# validation could fire. Lines that don't match ^UPPER_UNDERSCORE= are
+# skipped, so operators can intersperse comments (`# ...`) freely.
 state_load_answers() {
     local file="$1"
     [[ -z "$file" ]] && { err "state_load_answers: no file given"; return 1; }
     [[ -r "$file" ]] || { err "state_load_answers: cannot read $file"; return 1; }
-    # shellcheck source=/dev/null
-    source "$file"
-    local key
-    while IFS= read -r key; do
-        [[ -z "$key" ]] && continue
-        state_set "$key" "${!key}"
-    done < <(grep -E '^[A-Z_][A-Z0-9_]*=' "$file" | sed 's/=.*//')
+
+    local line key value
+    while IFS= read -r line; do
+        # Skip blank lines and full-line comments.
+        [[ "$line" =~ ^[[:space:]]*(#.*)?$ ]] && continue
+        # Only accept lines shaped like SHELL_LIKE_KEY=... — anything else
+        # (conditionals, function defs, command subst) is ignored silently.
+        [[ "$line" =~ ^[A-Z_][A-Z0-9_]*= ]] || continue
+        key="${line%%=*}"
+        value="${line#*=}"
+        # Strip one layer of matching surrounding quotes (single or double).
+        # Escape sequences inside quotes are NOT expanded — operators who
+        # need literal newlines should store them via state_set directly.
+        if [[ "$value" =~ ^\"(.*)\"$ ]] || [[ "$value" =~ ^\'(.*)\'$ ]]; then
+            value="${BASH_REMATCH[1]}"
+        fi
+        state_set "$key" "$value"
+    done < "$file"
 }
 
 # Echo the value of KEY if set (non-empty), otherwise DEFAULT.

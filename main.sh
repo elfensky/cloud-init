@@ -130,8 +130,25 @@ if [[ $RESET -eq 1 ]]; then
     fi
 
     if [[ -e "$STATE_FILE" ]]; then
-        warn "This wipes all wizard state (answers, completion flags, generated secrets)."
-        warn "Installed packages, helm releases, and config files on disk are NOT touched."
+        # Cluster-aware guard: state.env holds the live RKE2 join token.
+        # If RKE2 is already running, the next run generates a NEW token and
+        # rewrites config.yaml — other nodes' stored tokens won't match.
+        if [[ -f /etc/rancher/rke2/config.yaml ]] \
+           && { systemctl is-active --quiet rke2-server 2>/dev/null \
+                || systemctl is-active --quiet rke2-agent 2>/dev/null; }; then
+            warn "RKE2 is running on this node. --reset will regenerate the"
+            warn "cluster join token — other nodes will NOT be able to rejoin."
+            warn "Use --redo <specific-step> for targeted re-runs instead."
+        fi
+        warn "--reset wipes state.env only. Config files, installed packages,"
+        warn "and helm releases on disk stay — they are DETECTED and USED as"
+        warn "defaults on the next run, which can desync from state other"
+        warn "systems hold:"
+        warn "  - RKE2 peers store the current join token server-side."
+        warn "  - Grafana admin password lives in the helm-managed Secret."
+        warn "  - CrowdSec bouncer is registered with the CrowdSec console."
+        warn "Existing users, SSH keys, UFW rules, and sshd drop-ins persist."
+        warn "For a clean slate, reprovision the VM instead."
         if [[ $FORCE_RESET -eq 1 ]]; then
             info "--force-reset: proceeding without confirmation."
         elif [[ $NON_INTERACTIVE -eq 1 ]]; then

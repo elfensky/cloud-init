@@ -339,10 +339,14 @@ validate_port() {
     [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 1 && $1 <= 65535 ))
 }
 
-# Only checks the key type prefix — full key validation would require ssh-keygen.
-# Accepts RSA, Ed25519, and ECDSA public keys.
+# Validates that $1 is a single, well-formed SSH public key line. Rejects
+# multi-line input — authorized_keys is line-oriented, and a newline in the
+# value would cascade into a second file line on append (CWE-74/93). Accepts
+# RSA, Ed25519, and ECDSA keys with an optional comment. The regex anchors
+# to the full string so trailing garbage can't sneak past the prefix check.
 validate_ssh_key() {
-    [[ "$1" =~ ^(ssh-rsa|ssh-ed25519|ecdsa-sha2) ]]
+    [[ "$1" != *$'\n'* ]] || return 1
+    [[ "$1" =~ ^(ssh-rsa|ssh-ed25519|ecdsa-sha2-[a-z0-9-]+)[[:space:]]+[A-Za-z0-9+/=]+([[:space:]].*)?$ ]]
 }
 
 # =============================================================================
