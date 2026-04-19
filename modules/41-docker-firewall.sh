@@ -24,12 +24,17 @@ source "${MODULE_DIR}/../lib.sh"
 source "${MODULE_DIR}/../state.sh"
 
 applies_docker_firewall() {
-    # Both flags must agree. STEP_docker_SELECTED is the primary gate (set
-    # by 40-runtime when docker is chosen); the CONTAINER_RUNTIME check
-    # protects against stale STEP_docker_SELECTED after a state.env re-seed
-    # where the operator may have switched to podman.
+    # Three gates. STEP_docker_SELECTED is the primary switch (set by
+    # 40-runtime when docker is chosen). The CONTAINER_RUNTIME check
+    # protects against stale flags on --redo / answers.env import.
+    # DOCKER_FIREWALL_MODE lets the operator opt out of the DOCKER-USER
+    # chain when they handle port exposure via a provider firewall
+    # (Hetzner Cloud Firewall, AWS SG, etc.) that blocks inbound traffic
+    # before it hits this host's kernel — in that case Docker's iptables
+    # bypass doesn't matter.
     [[ "$(state_get STEP_docker_SELECTED)" == "yes" ]] \
-        && [[ "$(state_get CONTAINER_RUNTIME)" == "docker" ]]
+        && [[ "$(state_get CONTAINER_RUNTIME)" == "docker" ]] \
+        && [[ "$(state_get DOCKER_FIREWALL_MODE)" == "docker-user" ]]
 }
 
 detect_docker_firewall()    { return 0; }

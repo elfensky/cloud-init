@@ -39,27 +39,29 @@ detect_runtime() {
 }
 
 configure_runtime() {
-    info "Docker Engine (root daemon, wide ecosystem) or Podman (daemonless,"
-    info "rootless by default). Skip if RKE2 (step 60) will be the only"
-    info "container runtime on this host."
-    if ! ask_yesno "Install a container runtime (docker/podman)?" "n"; then
+    info "Podman (recommended: daemonless, rootless by default, no UFW-bypass"
+    info "footgun) or Docker Engine (wider ecosystem, root daemon). Skip if"
+    info "RKE2 (step 60) will be the only container runtime on this host."
+    if ! ask_yesno "Install a container runtime (podman/docker)?" "n"; then
         state_set CONTAINER_RUNTIME none
         state_unset STEP_docker_SELECTED 2>/dev/null || true
         state_mark_skipped runtime
         return 0
     fi
 
+    # Podman is idx 1 and the default. Docker is still a first-class option
+    # at idx 2 for operators who want/need it.
     local default=1
     case "$(state_get CONTAINER_RUNTIME)" in
-        docker) default=1 ;;
-        podman) default=2 ;;
+        podman) default=1 ;;
+        docker) default=2 ;;
     esac
     ask_choice "Container runtime" "$default" \
-        "Docker Engine|docker.com's docker-ce; root daemon; needs step 41 to close the UFW bypass" \
-        "Podman|daemonless; rootless by default; drop-in docker CLI via podman-docker"
+        "Podman (recommended)|daemonless; rootless by default; drop-in docker CLI via podman-docker" \
+        "Docker Engine|docker.com's docker-ce; root daemon; needs step 41 or a provider firewall"
     case "$REPLY" in
-        1) _configure_docker ;;
-        2) _configure_podman ;;
+        1) _configure_podman ;;
+        2) _configure_docker ;;
     esac
 }
 
@@ -75,6 +77,21 @@ _configure_docker() {
     else
         state_set DOCKER_ADD_USER no
     fi
+
+    # Docker's daemon inserts iptables rules that bypass UFW, so bound
+    # container ports become reachable from the internet unless mitigated.
+    # Two ways to handle it:
+    info "Docker bypasses UFW by default — bound container ports are"
+    info "reachable from the internet unless you mitigate this."
+    local fw_default=1
+    [[ "$(state_get DOCKER_FIREWALL_MODE)" == "provider" ]] && fw_default=2
+    ask_choice "How to control exposed Docker container ports" "$fw_default" \
+        "DOCKER-USER chain|Step 41 installs allow-from-private + default-drop rules in the iptables DOCKER-USER chain" \
+        "Provider firewall|Skip step 41; you block traffic at the cloud provider (Hetzner Cloud Firewall, AWS SG, GCP/DO Firewall, etc.). Make sure 22/80/443 are open upstream."
+    case "$REPLY" in
+        1) state_set DOCKER_FIREWALL_MODE docker-user ;;
+        2) state_set DOCKER_FIREWALL_MODE provider ;;
+    esac
 }
 
 _configure_podman() {
