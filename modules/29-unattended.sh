@@ -20,10 +20,19 @@ applies_unattended() { return 0; }
 detect_unattended()  { return 0; }
 
 configure_unattended() {
+    info "Daily apt security patching via unattended-upgrades."
+    info "Security-only channel; feature updates stay manual."
     if ! ask_yesno "Enable unattended security upgrades?" "y"; then
         state_mark_skipped unattended
         return 0
     fi
+
+    # Optional email for the unattended-upgrades MailReport. Only sends when
+    # an MTA (msmtp, postfix, sendmail) is installed and routable — the
+    # directive alone doesn't include a mail relay. Leave blank to skip.
+    ask_input "Email for upgrade reports (blank to skip; requires local MTA)" \
+        "$(state_get UNATTENDED_MAIL)"
+    state_set UNATTENDED_MAIL "$REPLY"
 
     # 29 runs before 60-rke2-preflight, so we can't default off based on an
     # RKE2 selection that hasn't been made yet. Operators on K8s nodes must
@@ -63,6 +72,16 @@ Unattended-Upgrade::Automatic-Reboot-Time "04:00";'
 Unattended-Upgrade::Automatic-Reboot "false";'
     fi
 
+    local mail_block=""
+    local mail_addr
+    mail_addr="$(state_get UNATTENDED_MAIL)"
+    if [[ -n "$mail_addr" ]]; then
+        # MailReport "on-change" = only when something actually got upgraded
+        # or an error occurred. Quieter than the default "always".
+        mail_block="Unattended-Upgrade::Mail \"${mail_addr}\";
+Unattended-Upgrade::MailReport \"on-change\";"
+    fi
+
     cat > /etc/apt/apt.conf.d/50unattended-upgrades <<EOF
 Unattended-Upgrade::Allowed-Origins {
     "\${distro_id}:\${distro_codename}";
@@ -73,11 +92,18 @@ Unattended-Upgrade::Allowed-Origins {
 Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
 ${reboot_block}
+${mail_block}
 Unattended-Upgrade::SyslogEnable "true";
 EOF
 
     systemctl enable --now unattended-upgrades
-    log "Unattended upgrades enabled (auto-reboot=$(state_get UNATTENDED_AUTO_REBOOT))"
+    if [[ -n "$mail_addr" ]]; then
+        log "Unattended upgrades enabled (auto-reboot=$(state_get UNATTENDED_AUTO_REBOOT); mail→${mail_addr})"
+        warn "Mail delivery requires a local MTA (apt install msmtp-mta or postfix);"
+        warn "the directive alone doesn't include a mail relay."
+    else
+        log "Unattended upgrades enabled (auto-reboot=$(state_get UNATTENDED_AUTO_REBOOT); no mail)"
+    fi
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

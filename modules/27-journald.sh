@@ -18,6 +18,8 @@ check_journald() {
 }
 
 run_journald() {
+    info "Capping journald at 1G total / 100M per file / 7-day retention."
+    info "Prevents runaway logs from filling /var on a busy host."
     mkdir -p /etc/systemd/journald.conf.d
     cat > /etc/systemd/journald.conf.d/99-cap.conf <<'EOF'
 [Journal]
