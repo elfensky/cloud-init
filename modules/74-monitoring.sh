@@ -72,23 +72,22 @@ run_monitoring() {
     helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
     helm repo update prometheus-community
 
-    local tmp grafana_host grafana_issuer logging
+    local tmp grafana_host grafana_issuer
     tmp="$(mktemp)"
     # shellcheck disable=SC2064
     trap "rm -f '$tmp'" RETURN
     grafana_host="$(state_get PLATFORM_GRAFANA_HOST)"
     grafana_issuer="$(state_get PLATFORM_GRAFANA_ISSUER)"
-    logging="$(state_get PLATFORM_LOGGING no)"
 
     local grafana_ingress=""
     if [[ -n "$grafana_issuer" && -n "$grafana_host" ]]; then
         grafana_ingress=$'\n  ingress:\n    enabled: true\n    ingressClassName: nginx\n    annotations:\n      cert-manager.io/cluster-issuer: "'"$grafana_issuer"$'"\n    hosts:\n      - '"$grafana_host"$'\n    tls:\n      - secretName: grafana-tls\n        hosts:\n          - '"$grafana_host"
     fi
 
-    local loki_ds=""
-    if [[ "$logging" == yes ]]; then
-        loki_ds=$'\n  additionalDataSources:\n    - name: Loki\n      type: loki\n      url: http://loki:3100\n      access: proxy\n      isDefault: false'
-    fi
+    # Grafana sidecar watches for ConfigMaps with the grafana_datasource=1
+    # label and adds them as datasources at runtime. 75-logging drops such a
+    # ConfigMap for Loki if logging is installed — no ordering coupling here.
+    local grafana_sidecar=$'\n  sidecar:\n    datasources:\n      enabled: true\n      label: grafana_datasource\n      labelValue: "1"\n      searchNamespace: ALL'
 
     cat > "$tmp" <<EOF
 prometheus:
@@ -133,13 +132,13 @@ grafana:
   persistence:
     enabled: true
     storageClassName: local-path
-    size: 10Gi${grafana_ingress}
+    size: 10Gi${grafana_ingress}${grafana_sidecar}
   resources:
     requests:
       cpu: 100m
       memory: 128Mi
     limits:
-      memory: 256Mi${loki_ds}
+      memory: 256Mi
 
 nodeExporter:
   resources:

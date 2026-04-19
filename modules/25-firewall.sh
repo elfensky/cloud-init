@@ -35,14 +35,12 @@ configure_firewall() {
         return 0
     fi
 
-    # Default HTTP open to YES if the operator has already selected Docker or
-    # a host-level web server earlier in the wizard; otherwise NO. The user
-    # can override in either direction.
-    local http_default="n"
-    [[ "$(state_get STEP_docker_SELECTED)" == "yes" ]] && http_default="y"
-    [[ -n "$(state_get WEBSERVER_KIND)" && "$(state_get WEBSERVER_KIND)" != "none" ]] && http_default="y"
-
-    if ask_yesno "Open HTTP/HTTPS (80/443) on the public interface?" "$http_default"; then
+    # Default the HTTP-open question to "y". 25 runs before 40-docker and
+    # 50-webserver-choice, so it can't know what the operator will pick at
+    # those steps — hence we don't try to infer. Most hosts want 80/443 open
+    # anyway. If the operator answers "n" and later installs Docker or a
+    # host reverse proxy, they can re-run:  sudo ./main.sh --redo 25-firewall
+    if ask_yesno "Open HTTP/HTTPS (80/443) on the public interface?" "y"; then
         state_set FIREWALL_OPEN_HTTP yes
     else
         state_set FIREWALL_OPEN_HTTP no

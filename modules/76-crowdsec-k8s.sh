@@ -3,17 +3,16 @@
 # 76-crowdsec-k8s.sh — CrowdSec LAPI + Agent + AppSec in-cluster
 # =============================================================================
 #
-# Deploys the CrowdSec chart into the cluster. The agent tails the
-# ingress-nginx controller pods for HTTP-layer signals; LAPI stores
-# decisions; AppSec provides virtual-patching WAF rules.
+# Deploys the CrowdSec chart into the cluster. Applies automatically when
+# SECURITY_TOOL=crowdsec (set by 30-intrusion); no separate y/n prompt.
+# That's the same flag that gates the Lua bouncer injection in 72, so both
+# stay in sync: picking "crowdsec" at step 30 gives you the host daemon,
+# this cluster LAPI/Agent/AppSec, and the Lua bouncer in ingress-nginx.
 #
-# Ordering note: 76 runs AFTER 72-ingress-nginx (numeric file order). That's
-# fine because the ingress-nginx Lua bouncer init container retries its
-# connection to the CrowdSec Service until LAPI is reachable — an extra few
-# minutes of startup latency rather than a hard failure. If the operator
-# enables both crowdsec AND ingress-nginx in the same run, 72 injects the
-# bouncer config referencing the (still-future) crowdsec.svc endpoint, then
-# 76 brings that endpoint up and the bouncer connects.
+# Ordering: 76 runs AFTER 72 (filename sort). 72 has already injected the
+# bouncer init container pointing at crowdsec-service.crowdsec.svc, and
+# its retry loop tolerates LAPI not being up yet. When 76 installs LAPI,
+# the bouncer reconnects on its next retry.
 # =============================================================================
 
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,38 +23,27 @@ source "${MODULE_DIR}/../state.sh"
 
 CROWDSEC_VERSION="${CROWDSEC_VERSION:-0.22.0}"
 
-applies_crowdsec_k8s() { [[ "$(state_get STEP_rke2_service_COMPLETED)" == "yes" ]]; }
+applies_crowdsec_k8s() {
+    [[ "$(state_get STEP_rke2_service_COMPLETED)" == "yes" ]] \
+        && [[ "$(state_get SECURITY_TOOL)" == "crowdsec" ]]
+}
 
 detect_crowdsec_k8s() { return 0; }
 
 configure_crowdsec_k8s() {
-    if ! ask_yesno "Install CrowdSec in the cluster (WAF + ingress bouncer)?" "n"; then
-        state_set PLATFORM_CROWDSEC no
-        return 0
-    fi
-    state_set PLATFORM_CROWDSEC yes
-
-    # Auto-generate a bouncer API key if not already on file.
+    # Driven by SECURITY_TOOL from step 30 — no separate y/n here. Generate
+    # the bouncer API key if 72 hasn't already, and reuse any host-side
+    # enrollment key captured at step 30.
     if [[ -z "$(state_get CROWDSEC_BOUNCER_KEY)" ]]; then
         state_set CROWDSEC_BOUNCER_KEY "$(openssl rand -hex 32)"
-    fi
-
-    # Reuse the host-side enrollment key if set; otherwise prompt.
-    if [[ -z "$(state_get CROWDSEC_ENROLL_KEY)" ]]; then
-        info "Get an enrollment key at https://app.crowdsec.net (leave blank to skip):"
-        ask_input "Enrollment key" ""
-        state_set CROWDSEC_ENROLL_KEY "$REPLY"
     fi
 }
 
 check_crowdsec_k8s() {
-    [[ "$(state_get PLATFORM_CROWDSEC no)" == yes ]] || return 0
     helm status -n crowdsec crowdsec >/dev/null 2>&1
 }
 
 run_crowdsec_k8s() {
-    [[ "$(state_get PLATFORM_CROWDSEC)" == yes ]] || { log "CrowdSec (k8s) disabled."; return 0; }
-
     helm repo add crowdsec https://crowdsecurity.github.io/helm-charts 2>/dev/null || true
     helm repo update crowdsec
 
@@ -121,8 +109,9 @@ EOF
         --version "$CROWDSEC_VERSION" \
         -f "$tmp"
     log "CrowdSec installed in-cluster (LAPI + Agent + AppSec)"
-    info "If ingress-nginx was installed BEFORE this module, re-run ingress-nginx"
-    info "so the Lua bouncer init container can reach LAPI."
+    # The bouncer init container in 72-ingress-nginx has a retry loop, so
+    # once LAPI's Service is routable, the bouncer connects on its next
+    # attempt — no manual re-run of 72 needed.
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

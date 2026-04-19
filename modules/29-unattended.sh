@@ -4,9 +4,10 @@
 # =============================================================================
 #
 # Operator chooses whether to enable at all, and whether to auto-reboot at
-# 04:00 UTC when a security update requires it. Default auto-reboot is OFF
-# when RKE2 was selected earlier (K8s nodes need coordinated reboots via
-# kured) and ON otherwise.
+# 04:00 UTC when a security update requires it. Auto-reboot default is "y"
+# (uncoordinated reboots are fine for single-node VPS / Docker hosts); K8s
+# operators should answer "n" when the wizard asks, because uncoordinated
+# 04:00 reboots on a cluster node bypass kured's coordination.
 # =============================================================================
 
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,11 +25,12 @@ configure_unattended() {
         return 0
     fi
 
-    # Reboot default: off when RKE2 was selected (use kured), on otherwise.
-    local reboot_default="y"
-    [[ "$(state_get STEP_rke2_SELECTED)" == "yes" ]] && reboot_default="n"
-
-    if ask_yesno "Auto-reboot at 04:00 when a kernel update requires it?" "$reboot_default"; then
+    # 29 runs before 60-rke2-preflight, so we can't default off based on an
+    # RKE2 selection that hasn't been made yet. Operators on K8s nodes must
+    # answer "n" — documented in the prompt so it's hard to miss.
+    info "Note: K8s (RKE2) nodes should answer 'n' below — use kured for"
+    info "coordinated cluster reboots instead of 04:00 UTC kernel restarts."
+    if ask_yesno "Auto-reboot at 04:00 when a kernel update requires it?" "y"; then
         state_set UNATTENDED_AUTO_REBOOT yes
     else
         state_set UNATTENDED_AUTO_REBOOT no

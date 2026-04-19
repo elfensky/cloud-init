@@ -104,7 +104,32 @@ EOF
         --version "$PROMTAIL_VERSION" \
         -f "$promtail_tmp"
 
-    log "Loki + Promtail installed"
+    # Drop a labelled ConfigMap so Grafana's sidecar (enabled in 74) picks
+    # up Loki as a datasource without us having to helm-upgrade the
+    # monitoring chart. The label `grafana_datasource=1` is what the
+    # kube-prometheus-stack Grafana sidecar watches for.
+    kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-datasource
+  namespace: monitoring
+  labels:
+    grafana_datasource: "1"
+data:
+  loki.yaml: |-
+    apiVersion: 1
+    datasources:
+      - name: Loki
+        type: loki
+        access: proxy
+        url: http://loki:3100
+        isDefault: false
+        jsonData:
+          maxLines: 1000
+EOF
+
+    log "Loki + Promtail installed (Grafana datasource ConfigMap applied)"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

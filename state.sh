@@ -82,7 +82,9 @@ state_get() {
 # whitespace, and backslashes without hand-escaping.
 state_set() {
     local key="$1" value="$2"
-    [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || { err "state_set: invalid key '$key'"; return 1; }
+    # Mixed case allowed — step-tracking keys are built from module filenames
+    # that contain lowercase (e.g. STEP_firewall_COMPLETED, STEP_docker_SELECTED).
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { err "state_set: invalid key '$key'"; return 1; }
 
     printf -v "$key" '%s' "$value"
     # shellcheck disable=SC2163  # $key holds the variable name, not its value.
@@ -100,7 +102,7 @@ state_set() {
 # Remove KEY from state.env and unset the shell variable.
 state_unset() {
     local key="$1"
-    [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || { err "state_unset: invalid key '$key'"; return 1; }
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { err "state_unset: invalid key '$key'"; return 1; }
     unset "$key"
     [[ -f "$STATE_FILE" ]] || return 0
     local tmp

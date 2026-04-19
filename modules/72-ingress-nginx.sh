@@ -7,8 +7,12 @@
 # points directly at worker IPs; Kubernetes does not allocate a LoadBalancer
 # service.
 #
-# CrowdSec Lua bouncer is injected inline when SECURITY_TOOL=crowdsec AND
-# CrowdSec-in-cluster (76-crowdsec-k8s) is installed.
+# The CrowdSec Lua bouncer is injected inline when SECURITY_TOOL=crowdsec
+# (set by step 30-intrusion, which runs well before this module). That one
+# flag is the single switch: picking "crowdsec" at step 30 gives you the
+# host daemon, cluster LAPI (via module 76), and this Lua bouncer at L7.
+# 76's applies_ is gated on the same flag — they stay in sync without
+# ordering games.
 #
 # Proxy Protocol ordering warning is preserved — operator must enable PP on
 # the LB for 80/443 AFTER this module runs, and NEVER on 6443.
@@ -67,7 +71,16 @@ run_ingress_nginx() {
 
     local lb_ip cs_enabled bouncer_key
     lb_ip="$(state_get PLATFORM_INGRESS_LB_IP)"
-    cs_enabled="$(state_get PLATFORM_CROWDSEC no)"
+    # SECURITY_TOOL=crowdsec (set by 30-intrusion) drives both the in-cluster
+    # LAPI install (76-crowdsec-k8s) and this L7 bouncer injection. Single
+    # switch, no ordering coupling.
+    cs_enabled="no"
+    [[ "$(state_get SECURITY_TOOL)" == "crowdsec" ]] && cs_enabled="yes"
+    # Generate a bouncer API key now if CrowdSec was picked but 76 hasn't
+    # run yet — 76 will reuse the same key when it configures LAPI.
+    if [[ "$cs_enabled" == "yes" && -z "$(state_get CROWDSEC_BOUNCER_KEY)" ]]; then
+        state_set CROWDSEC_BOUNCER_KEY "$(openssl rand -hex 32)"
+    fi
     bouncer_key="$(state_get CROWDSEC_BOUNCER_KEY)"
 
     local cs_image="" cs_volumes="" cs_init="" cs_mounts="" cs_cfg=""
