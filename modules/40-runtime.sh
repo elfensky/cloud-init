@@ -173,9 +173,33 @@ _run_podman() {
     local user
     user="$(state_get USER_NAME)"
     if [[ -n "$user" ]] && id "$user" &>/dev/null; then
+        local uid runtime_dir
+        uid="$(id -u "$user")"
+        runtime_dir="/run/user/${uid}"
+
+        # loginctl enable-linger spawns the user's systemd manager and keeps
+        # it alive past logout. The `|| true` is intentional: on some minimal
+        # installs linger is already enabled and the call is a no-op error.
         loginctl enable-linger "$user" 2>/dev/null || true
-        sudo -u "$user" systemctl --user enable --now podman.socket 2>/dev/null || true
-        log "Rootless podman enabled for '$user' (socket at /run/user/\$(id -u $user)/podman/podman.sock)"
+
+        # sudo -u does NOT create a PAM session, so XDG_RUNTIME_DIR and
+        # DBUS_SESSION_BUS_ADDRESS aren't set automatically. Without them,
+        # `systemctl --user` fails with "Failed to connect to bus" because
+        # it can't locate the per-user systemd manager socket at
+        # $XDG_RUNTIME_DIR/systemd/private. Export them explicitly.
+        #
+        # Real errors surface — no `|| true` swallow — so the operator
+        # learns when the user-mode socket didn't come up.
+        if sudo -u "$user" \
+               XDG_RUNTIME_DIR="$runtime_dir" \
+               DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime_dir}/bus" \
+               systemctl --user enable --now podman.socket; then
+            log "Rootless podman socket enabled for '$user' (${runtime_dir}/podman/podman.sock)"
+        else
+            warn "podman user socket failed to enable for '$user'."
+            warn "Podman itself works; only tools that expect DOCKER_HOST are affected."
+            warn "Manual fix as $user:  systemctl --user enable --now podman.socket"
+        fi
     fi
 
     log "Podman installed (rootless by default)"

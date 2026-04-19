@@ -73,6 +73,21 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Refuse --redo + --only together. --redo mutates persistent state (clears
+# completion flags in state.env for every matched module); --only changes
+# which module runs THIS invocation. When combined, --redo's flag-clearing
+# side effects apply to modules that the --only filter then prevents from
+# running — so the next plain `main.sh` invocation surprises the operator
+# by re-running modules they didn't ask for. Keeping these flags mutually
+# exclusive removes the ambiguity entirely.
+if [[ -n "$REDO" && -n "$ONLY" ]]; then
+    err "--redo and --only cannot be combined."
+    err "  --redo clears completion flags across modules (persistent)."
+    err "  --only narrows execution to one module this run (transient)."
+    err "  Use them in separate invocations."
+    exit 2
+fi
+
 # Given a module file path, echo its short name: "/x/25-firewall.sh" → "25-firewall".
 mod_name() {
     local f="$1"
