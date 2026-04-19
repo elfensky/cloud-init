@@ -135,15 +135,21 @@ For Calico + WireGuard, 64-rke2-wireguard does NOT write a pre-install HelmChart
 
 ## Validation commands
 
-Run before committing any change:
+**Run these locally before committing any shell-file change.** `.github/workflows/lint.yml` runs the same two checks on every push and PR to `main`; a red CI run blocks the merge. Catching lint failures locally is cheaper than pushing and waiting for CI.
 
 ```bash
-bash -n main.sh state.sh modules/*.sh
-shellcheck -x main.sh state.sh modules/*.sh
-grep -rn 'PROFILE' main.sh state.sh modules/ README.md CLAUDE.md   # should be zero hits
+find . -name '*.sh' -not -path './.git/*' -print0 | xargs -0 -n1 bash -n
+shellcheck -x -S style main.sh lib.sh state.sh modules/*.sh
+grep -rn 'PROFILE' main.sh lib.sh state.sh modules/ README.md CLAUDE.md   # should be zero hits
 ```
 
-The `source`-path directives use `# shellcheck source=/dev/null` because modules source `lib.sh` via a computed variable path (`${MODULE_DIR}/../lib.sh`) that shellcheck can't statically resolve. Intentional — don't try to "fix" it with `source-path=SCRIPTDIR`; it breaks when shellcheck is invoked with a changed CWD.
+Notes on the flags:
+
+- `bash -n` is a pure parse pass — catches unclosed quotes, missing `fi`/`done`, malformed heredocs. No side effects.
+- `shellcheck -x` follows `source` directives, but each module uses `# shellcheck source=/dev/null` because they source `lib.sh` via a computed variable path (`${MODULE_DIR}/../lib.sh`) that shellcheck can't statically resolve. That's why all four files (`main.sh`, `lib.sh`, `state.sh`, `modules/*.sh`) are passed explicitly — each gets analyzed independently. Don't try to "fix" the `/dev/null` directive with `source-path=SCRIPTDIR`; it breaks when shellcheck is invoked with a changed CWD.
+- `-S style` is the strictest default severity. The repo is clean at this level today and CI enforces it. Don't suppress warnings to manufacture a green run — fix the underlying issue.
+
+If you introduced a change that cannot pass lint (e.g. an intentional style exception), add a scoped `# shellcheck disable=SC####` with a one-line comment explaining why. Wholesale suppression (`--exclude=...` in the workflow, wrapping in `|| true`) is not acceptable.
 
 ## Git
 
