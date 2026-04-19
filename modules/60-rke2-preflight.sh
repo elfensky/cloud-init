@@ -23,6 +23,8 @@ applies_rke2_preflight() { return 0; }
 detect_rke2_preflight() { return 0; }
 
 configure_rke2_preflight() {
+    info "Rancher's lightweight Kubernetes distribution — unlocks later steps"
+    info "for the platform stack (ingress, cert-manager, monitoring, logging, Rancher)."
     if ! ask_yesno "Install RKE2 (Kubernetes)?" "n"; then
         state_mark_skipped rke2_preflight
         state_set STEP_rke2_SELECTED no

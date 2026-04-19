@@ -16,6 +16,8 @@ applies_rancher() { [[ "$(state_get STEP_rke2_service_COMPLETED)" == "yes" ]]; }
 detect_rancher() { return 0; }
 
 configure_rancher() {
+    info "Web UI for managing this (and other) Kubernetes clusters."
+    info "Optional — kubectl/helm cover the same ground from the command line."
     if ! ask_yesno "Install Rancher (management UI)?" "n"; then
         state_set PLATFORM_RANCHER no
         return 0

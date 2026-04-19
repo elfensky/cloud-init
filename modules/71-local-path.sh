@@ -17,6 +17,8 @@ applies_local_path() { [[ "$(state_get STEP_rke2_service_COMPLETED)" == "yes" ]]
 detect_local_path()  { return 0; }
 
 configure_local_path() {
+    info "Rancher local-path-provisioner: hostPath-backed dynamic PVs on each node."
+    info "Fine for single-node or non-HA workloads; use Longhorn/Ceph for multi-node replication."
     if ask_yesno "Install local-path-provisioner as default StorageClass?" "y"; then
         state_set PLATFORM_LOCAL_PATH yes
     else

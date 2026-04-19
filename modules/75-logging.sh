@@ -17,6 +17,8 @@ applies_logging() { [[ "$(state_get STEP_rke2_service_COMPLETED)" == "yes" ]]; }
 detect_logging() { return 0; }
 
 configure_logging() {
+    info "Loki stores logs; Promtail tails pod logs and ships them in as a DaemonSet."
+    info "Appears as a Grafana datasource automatically via the sidecar-ConfigMap pattern."
     if ! ask_yesno "Install logging (Loki + Promtail)?" "y"; then
         state_set PLATFORM_LOGGING no
         return 0

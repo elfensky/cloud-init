@@ -13,6 +13,8 @@ applies_ubuntu_pro() { return 0; }
 detect_ubuntu_pro()  { return 0; }
 
 configure_ubuntu_pro() {
+    info "Canonical subscription: ESM (extended security patches) + Livepatch (kernel hotfixes)."
+    info "Free for personal use up to 5 machines; requires a token from ubuntu.com/pro."
     if ask_yesno "Attach Ubuntu Pro?" "n"; then
         ask_input "Ubuntu Pro token (from ubuntu.com/pro/dashboard)" "$(state_get UBUNTU_PRO_TOKEN)"
         state_set UBUNTU_PRO_TOKEN "$REPLY"

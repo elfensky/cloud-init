@@ -17,6 +17,8 @@ applies_cert_manager() { [[ "$(state_get STEP_rke2_service_COMPLETED)" == "yes" 
 detect_cert_manager() { return 0; }
 
 configure_cert_manager() {
+    info "Automates Let's Encrypt cert issuance via ClusterIssuer + HTTP-01 challenge."
+    info "Ingress resources get certs by adding a cert-manager.io/cluster-issuer annotation."
     if ! ask_yesno "Install cert-manager (Let's Encrypt automation)?" "y"; then
         state_set PLATFORM_CERTMGR no
         return 0

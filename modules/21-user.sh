@@ -47,6 +47,8 @@ configure_user() {
     local default_create="y"
     [[ -n "$(state_get USER_NAME)" ]] && default_create="y"
 
+    info "Adds a sudo-capable user; SSH hardening (step 24) disables root login."
+    info "Skip only if a non-root login is already configured out-of-band."
     if ask_yesno "Create a non-root sudo user?" "$default_create"; then
         while true; do
             ask_input "Username (must start with lowercase letter; lowercase/digits/-/_)" "$(state_get USER_NAME)" '^[a-z][a-z0-9_-]*$'

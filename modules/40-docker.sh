@@ -20,6 +20,8 @@ applies_docker() { return 0; }
 detect_docker() { return 0; }
 
 configure_docker() {
+    info "Official docker-ce + compose plugin from docker.com's signed repo."
+    info "Step 41 follows and closes the UFW-bypass hole that Docker otherwise opens."
     if ! ask_yesno "Install Docker CE?" "n"; then
         state_mark_skipped docker
         return 0

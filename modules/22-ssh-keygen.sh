@@ -60,6 +60,8 @@ detect_ssh_keygen() {
 }
 
 configure_ssh_keygen() {
+    info "Creates a new Ed25519 identity on this host for outbound SSH."
+    info "Useful for GitHub deploy keys, rsync backups, kubectl-over-ssh between nodes."
     if ! ask_yesno "Generate an Ed25519 keypair on this host (for GitHub, peers, etc.)?" "y"; then
         state_set SSH_KEYGEN_ENABLED no
         return 0

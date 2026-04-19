@@ -33,6 +33,8 @@ applies_ingress_nginx() { [[ "$(state_get STEP_rke2_service_COMPLETED)" == "yes"
 detect_ingress_nginx() { return 0; }
 
 configure_ingress_nginx() {
+    info "Cluster-wide L7 ingress as a DaemonSet on worker nodes (hostPort 80/443)."
+    info "Injects the CrowdSec Lua bouncer automatically when step 30 chose CrowdSec."
     if ! ask_yesno "Install ingress-nginx?" "y"; then
         state_set PLATFORM_INGRESS no
         return 0

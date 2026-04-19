@@ -16,6 +16,8 @@ applies_monitoring() { [[ "$(state_get STEP_rke2_service_COMPLETED)" == "yes" ]]
 detect_monitoring() { return 0; }
 
 configure_monitoring() {
+    info "kube-prometheus-stack: metrics (Prometheus), dashboards (Grafana), alerting (Alertmanager)."
+    info "The Loki datasource is auto-wired when step 75 (logging) is also selected."
     if ! ask_yesno "Install monitoring (Prometheus + Grafana + Alertmanager)?" "y"; then
         state_set PLATFORM_MONITORING no
         return 0

@@ -13,6 +13,8 @@ applies_tailscale() { return 0; }
 detect_tailscale()  { return 0; }
 
 configure_tailscale() {
+    info "Zero-config mesh VPN over WireGuard; requires a Tailscale account."
+    info "Optional — skip if this host doesn't need private access from laptops/phones."
     if ask_yesno "Install Tailscale VPN?" "n"; then
         state_set TAILSCALE_ENABLED yes
     else
