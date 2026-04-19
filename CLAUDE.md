@@ -12,13 +12,24 @@ Entry point is `main.sh`, which orchestrates modular sub-scripts under `modules/
 
 ### Files
 
-- `main.sh` — Orchestrator. Discovers `modules/NN-*.sh`, runs each module's `applies_*` filter, then a configure-pass (all prompts upfront), then a run-pass. Supports `--phase {host,rke2,platform}`, `--only NN-name`, `--answers FILE`, `--non-interactive`, `--dry-run`.
+- `main.sh` — Orchestrator. Discovers `modules/NN-*.sh`, runs each module's `applies_*` filter, then a configure-pass (all prompts upfront), then a run-pass. Flags: `--phase {host,rke2,platform}`, `--only NN-name`, `--answers FILE`, `--non-interactive`, `--dry-run`.
 - `state.sh` — Ephemeral state helpers. Writes `/run/cloud-init-scripts/state.env` (tmpfs, 0600) during a run; deleted by trap on exit. Canonical source of truth is the actual config files the modules write (sshd_config.d, ufw, /etc/crowdsec/..., /etc/rancher/rke2/...).
-- `lib.sh` — Shared function library (ask_*, validate_*, detect_*, wait_for, ensure_tmux, banner).
-- `modules/` — One file per phase; see `modules/NN-*.sh`.
-- `answers.env.example` — Template for headless/cloud-init runs.
-- `init.1.vps.sh`, `init.2.rke2.sh`, `init.3.pods.sh` — Backward-compatibility shims → `main.sh --phase {host,rke2,platform}`.
-- `old/` — Archived legacy scripts (do not modify).
+- `lib.sh` — Shared function library (ask_*, validate_*, detect_*, wait_for, ensure_tmux, banner). See its header for the full function reference.
+- `modules/` — 40 numbered modules, one phase per file.
+
+### Usage
+
+```bash
+sudo ./main.sh                         # interactive; runs all modules applicable to the chosen profile
+sudo ./main.sh --phase host            # OS hardening + security + profile-host (docker / webserver / audit)
+sudo ./main.sh --phase rke2            # K8s profile: RKE2 install
+sudo ./main.sh --phase platform        # K8s profile: Helm stack
+sudo ./main.sh --only 25-firewall      # run one module
+sudo ./main.sh --dry-run               # list what would run
+sudo ./main.sh --answers FILE --non-interactive   # headless; FILE pre-seeds state with KEY=VALUE lines
+```
+
+Headless `KEY` names are whatever the modules set via `state_set` — grep the `modules/*.sh` for `state_set` to enumerate them.
 
 ### Module numbering
 

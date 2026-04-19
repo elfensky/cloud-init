@@ -14,18 +14,13 @@
 #
 # Usage:
 #   sudo ./main.sh                       # interactive, all applicable modules
-#   sudo ./main.sh --phase os            # OS hardening only (10/15/20s/30s)
-#   sudo ./main.sh --phase rke2          # K8s profile: RKE2 install (59-65)
+#   sudo ./main.sh --phase host          # OS + security + profile-specific host
+#   sudo ./main.sh --phase rke2          # K8s profile: RKE2 install (60-65)
 #   sudo ./main.sh --phase platform      # K8s profile: platform stack (70s)
 #   sudo ./main.sh --only 25-firewall    # run one module by name
-#   sudo ./main.sh --answers FILE        # pre-seed state from FILE
+#   sudo ./main.sh --answers FILE        # pre-seed state from a KEY=VALUE file
 #   sudo ./main.sh --non-interactive     # skip prompts, require full answers
 #   sudo ./main.sh --dry-run             # list what would run; no side effects
-#
-# Legacy shims:
-#   init.1.vps.sh  -> main.sh --phase os
-#   init.2.rke2.sh -> main.sh --phase rke2
-#   init.3.pods.sh -> main.sh --phase platform
 # =============================================================================
 
 set -euo pipefail
@@ -70,7 +65,6 @@ phase_glob() {
         # profile: OS hardening (10-39), docker (40s), webserver + audit (50s).
         # For k8s profile, audit (59) belongs here; docker/webserver are gated off.
         # For docker profile, docker + webserver modules run; audit is gated off.
-        # This matches init.1.vps.sh's historic scope per profile.
         host|os)   echo "1?-*.sh 2?-*.sh 3?-*.sh 4?-*.sh 5?-*.sh" ;;
         rke2)      echo "6?-*.sh" ;;
         platform)  echo "7?-*.sh" ;;
