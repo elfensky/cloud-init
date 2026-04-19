@@ -95,7 +95,7 @@ After writing `/etc/ssh/sshd_config.d/99-hardening.conf` and reloading sshd, the
 
 The run function: `ufw --force reset` → `default deny incoming` → **add SSH rule** → allow-all on private → `ufw --force enable`. Reordering to enable UFW before the SSH allow rule locks the operator out mid-script.
 
-### `40-docker` / `41-docker-firewall`: Docker bypasses UFW
+### `40-runtime` / `41-docker-firewall`: Docker bypasses UFW
 
 Docker's daemon inserts its own rules into `iptables FORWARD` that run BEFORE UFW's rules, so bound container ports become reachable from the public internet even when UFW default-deny is set. 41 fixes this by installing explicit rules in the `DOCKER-USER` chain: allow from `NET_PRIVATE_CIDR`, then default-drop. If 41 is skipped, any `docker run -p 80:80` exposes the container publicly regardless of UFW state. Do not let anyone "simplify" this module away.
 

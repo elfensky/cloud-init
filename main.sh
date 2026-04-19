@@ -62,11 +62,17 @@ usage() {
     sed -n '3,35p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
+# Guard each value-taking flag so `./main.sh --redo` (no arg) prints a usage
+# error instead of tripping `set -u` with an "unbound variable" at "$2".
+_require_value() {
+    [[ $# -ge 2 && -n "${2:-}" ]] || { err "$1 requires a value"; usage; exit 2; }
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --only)            ONLY="$2"; shift 2 ;;
-        --redo)            REDO="$2"; shift 2 ;;
-        --answers)         ANSWERS_FILE="$2"; shift 2 ;;
+        --only)            _require_value "$@"; ONLY="$2"; shift 2 ;;
+        --redo)            _require_value "$@"; REDO="$2"; shift 2 ;;
+        --answers)         _require_value "$@"; ANSWERS_FILE="$2"; shift 2 ;;
         --non-interactive) NON_INTERACTIVE=1; shift ;;
         --dry-run)         DRY_RUN=1; shift ;;
         --reset)           RESET=1; shift ;;

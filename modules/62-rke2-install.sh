@@ -32,8 +32,17 @@ check_rke2_install() {
 }
 
 verify_rke2_install() {
-    [[ -x /usr/local/bin/rke2 ]] \
-        && [[ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)" == "1" ]]
+    # Verify the load-bearing keys from /etc/sysctl.d/99-rke2.conf — on container
+    # hosts / kernels with locked sysctls, some keys may fail to apply while
+    # others succeed. The rp_filter=0 CNI carve-out in particular is required
+    # for Calico/Cilium asymmetric-routing; missing it breaks pod-to-pod traffic
+    # at runtime with the k8s API still reporting nodes as Ready.
+    [[ -x /usr/local/bin/rke2 ]] || return 1
+    [[ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)" == "1" ]] || return 1
+    [[ "$(sysctl -n net.bridge.bridge-nf-call-iptables 2>/dev/null)" == "1" ]] || return 1
+    [[ "$(sysctl -n net.ipv4.conf.all.rp_filter 2>/dev/null)" == "0" ]] || return 1
+    lsmod 2>/dev/null | grep -q '^br_netfilter' || return 1
+    return 0
 }
 
 _install_k8s_sysctl_and_modules() {

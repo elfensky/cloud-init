@@ -124,6 +124,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     state_init
     detect_ssh_harden
     configure_ssh_harden
+    state_skipped ssh_harden && exit 0
     check_ssh_harden && { log "SSH already hardened with this port; skipping."; exit 0; }
     run_ssh_harden
+    check_ssh_harden || { err "SSH harden verification failed"; exit 1; }
 fi

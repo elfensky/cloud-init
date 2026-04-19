@@ -70,11 +70,13 @@ configure_user() {
 
         info "Paste the SSH public key for $(state_get USER_NAME):"
         local key=""
-        read -rp "Public key: " key
-        if [[ -z "$key" ]] || ! validate_ssh_key "$key"; then
+        # Loop on bad paste instead of exiting the whole wizard — matches the
+        # pattern the other input validators (port, CIDR, timezone) use.
+        while true; do
+            read -rp "Public key: " key || { err "stdin closed"; exit 1; }
+            [[ -n "$key" ]] && validate_ssh_key "$key" && break
             err "Invalid or empty SSH key. Must start with ssh-rsa, ssh-ed25519, or ecdsa-sha2."
-            exit 1
-        fi
+        done
         state_set USER_SSH_KEY "$key"
     else
         # Lockout guard.

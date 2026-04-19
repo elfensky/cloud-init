@@ -58,5 +58,9 @@ run_packages() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     require_root
     state_init
+    detect_packages
+    configure_packages
+    state_skipped packages && exit 0
     run_packages
+    verify_packages || { err "Packages verification failed"; exit 1; }
 fi

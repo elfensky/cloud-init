@@ -116,5 +116,8 @@ verify_finalize() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     require_root
     state_init
+    configure_finalize
+    state_skipped finalize && exit 0
     run_finalize
+    verify_finalize || { err "Finalize verification failed"; exit 1; }
 fi

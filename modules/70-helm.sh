@@ -42,6 +42,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     require_root
     state_init
     applies_helm || exit 0
+    configure_helm
+    state_skipped helm && exit 0
     check_helm && { log "Already installed; skipping."; exit 0; }
     run_helm
     check_helm || { err "Helm verification failed"; exit 1; }

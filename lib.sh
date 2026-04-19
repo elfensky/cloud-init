@@ -32,6 +32,7 @@
 # VALIDATORS                                All return 0=valid, 1=invalid
 #   validate_ip IP                          IPv4 address (format + octet range)
 #   validate_cidr CIDR                      IPv4 CIDR (address + /0-32 prefix)
+#   validate_private_cidr CIDR              RFC1918 CIDR (rejects 0.0.0.0/0 and public space)
 #   validate_hostname HOST                  RFC-952 hostname (max 253 chars)
 #   validate_username USER                  Linux username  (lowercase, max 32 chars)
 #   validate_port PORT                      TCP/UDP port    (1-65535)
@@ -134,10 +135,11 @@ ask_choice() {
         printf "  ${BOLD}%d)${NC} %-16s— %s%s\n" "$num" "${labels[$i]}" "${descs[$i]}" "$marker"
     done
 
-    # Loop until a valid numeric choice is entered.
+    # Loop until a valid numeric choice is entered. An EOF on stdin (piped
+    # /dev/null, closed tty) exits loudly instead of busy-looping on "Invalid".
     local input
     while true; do
-        read -rp "Choice [${default}]: " input
+        read -rp "Choice [${default}]: " input || { err "stdin closed"; exit 1; }
         input="${input:-$default}"
         if [[ "$input" =~ ^[0-9]+$ ]] && (( input >= 1 && input <= ${#labels[@]} )); then
             REPLY="$input"
@@ -173,7 +175,7 @@ ask_yesno() {
 
     local input
     while true; do
-        read -rp "Choice [${default_num}]: " input
+        read -rp "Choice [${default_num}]: " input || { err "stdin closed"; exit 1; }
         input="${input:-$default_num}"
         case "$input" in
             1) return 0 ;;
@@ -197,7 +199,7 @@ ask_input() {
 
     local input
     while true; do
-        read -rp "${prompt}${display_default}: " input
+        read -rp "${prompt}${display_default}: " input || { err "stdin closed"; exit 1; }
         input="${input:-$default}"
 
         if [[ -z "$input" ]]; then
@@ -224,7 +226,7 @@ ask_password() {
 
     while true; do
         # -s suppresses echo; the manual echo "" adds the missing newline after input.
-        read -srp "${prompt}: " input
+        read -srp "${prompt}: " input || { echo ""; err "stdin closed"; exit 1; }
         echo ""
 
         if [[ ${#input} -lt $min_length ]]; then
@@ -272,7 +274,7 @@ ask_multiselect() {
             printf "  ${BOLD}%d)${NC} [%s] %-28s— %s\n" "$num" "$mark" "${labels[$i]}" "${descs[$i]}"
         done
         echo ""
-        read -rp "Toggle number, or Enter to confirm: " input
+        read -rp "Toggle number, or Enter to confirm: " input || { err "stdin closed"; exit 1; }
 
         # Empty input = user is done selecting; export current states.
         if [[ -z "$input" ]]; then
@@ -321,6 +323,23 @@ validate_cidr() {
     local ip="${cidr%/*}"
     local prefix="${cidr#*/}"
     validate_ip "$ip" && (( prefix <= 32 ))
+}
+
+# Stricter CIDR check for values that feed "trusted" allow-lists (private-net
+# firewall rules, DOCKER-USER allow-from, ingress-nginx proxy-real-ip-cidr).
+# Rejects 0.0.0.0/0 and anything outside RFC1918 (10/8, 172.16/12, 192.168/16).
+# A lone validate_cidr accepts 0.0.0.0/0, which would silently open the host
+# when used as NET_PRIVATE_CIDR.
+validate_private_cidr() {
+    local cidr="$1"
+    validate_cidr "$cidr" || return 1
+    local ip="${cidr%/*}"
+    local prefix="${cidr#*/}"
+    [[ "$ip" == "0.0.0.0" ]] && return 1
+    if [[ "$ip" =~ ^10\. ]]                          && (( prefix >= 8  )); then return 0; fi
+    if [[ "$ip" =~ ^192\.168\. ]]                    && (( prefix >= 16 )); then return 0; fi
+    if [[ "$ip" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]] && (( prefix >= 12 )); then return 0; fi
+    return 1
 }
 
 # RFC-952 hostname: starts and ends with alphanumeric, allows dots and hyphens, max 253 chars.

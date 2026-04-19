@@ -55,12 +55,23 @@ configure_cert_manager() {
 
 check_cert_manager() {
     [[ "$(state_get PLATFORM_CERTMGR no)" == yes ]] || return 0
-    helm status -n cert-manager cert-manager >/dev/null 2>&1
+    helm status -n cert-manager cert-manager >/dev/null 2>&1 || return 1
+    # Helm release green isn't enough — if webhook was slow, the issuer apply
+    # in run_ silently failed and downstream Ingress resources never get certs.
+    local issuers
+    issuers="$(state_get PLATFORM_CERT_ISSUERS)"
+    if [[ "$issuers" == "staging" || "$issuers" == "both" ]]; then
+        kubectl get clusterissuer letsencrypt-staging >/dev/null 2>&1 || return 1
+    fi
+    if [[ "$issuers" == "prod" || "$issuers" == "both" ]]; then
+        kubectl get clusterissuer letsencrypt-prod >/dev/null 2>&1 || return 1
+    fi
+    return 0
 }
 
 _write_issuer() {
     local name="$1" server="$2" email="$3"
-    kubectl apply -f - <<EOF
+    if ! kubectl apply -f - <<EOF
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
@@ -76,6 +87,10 @@ spec:
           ingress:
             class: nginx
 EOF
+    then
+        err "Failed to apply ClusterIssuer ${name}"
+        return 1
+    fi
     log "ClusterIssuer: ${name}"
 }
 
@@ -94,18 +109,23 @@ run_cert_manager() {
         --wait --timeout 300s
     log "cert-manager installed"
 
-    # Webhook needs a few seconds to register its API service.
-    sleep 10
+    # The webhook's APIService takes a bit to register even after the
+    # deployment is available — the previous fixed `sleep 10` was optimistic
+    # on slow nodes, so ClusterIssuer applies raced and silently failed.
+    kubectl wait --for=condition=available --timeout=300s \
+        deployment/cert-manager-webhook -n cert-manager
 
     local email issuers
     email="$(state_get PLATFORM_CERT_EMAIL)"
     issuers="$(state_get PLATFORM_CERT_ISSUERS)"
 
     if [[ "$issuers" == "staging" || "$issuers" == "both" ]]; then
-        _write_issuer "letsencrypt-staging" "https://acme-staging-v02.api.letsencrypt.org/directory" "$email"
+        _write_issuer "letsencrypt-staging" "https://acme-staging-v02.api.letsencrypt.org/directory" "$email" \
+            || return 1
     fi
     if [[ "$issuers" == "prod" || "$issuers" == "both" ]]; then
-        _write_issuer "letsencrypt-prod" "https://acme-v02.api.letsencrypt.org/directory" "$email"
+        _write_issuer "letsencrypt-prod" "https://acme-v02.api.letsencrypt.org/directory" "$email" \
+            || return 1
     fi
 }
 

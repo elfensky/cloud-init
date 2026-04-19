@@ -93,7 +93,9 @@ EOF
         -f "$tmp"
 
     log "Rancher installed"
-    log "Rancher: https://$(state_get PLATFORM_RANCHER_HOST) (password: $(state_get PLATFORM_RANCHER_PASSWORD))"
+    # Bootstrap password is printed once at 99-finalize (gated + followed by
+    # state.env wipe) — not on every run_ where it would land in tmux scrollback.
+    log "Rancher: https://$(state_get PLATFORM_RANCHER_HOST) (bootstrap password shown at finalize)"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

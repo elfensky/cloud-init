@@ -171,7 +171,9 @@ EOF
         --version "$KUBE_PROM_STACK_VERSION" \
         -f "$tmp"
     log "Monitoring stack installed"
-    log "Grafana: https://${grafana_host} (admin / $(state_get PLATFORM_GRAFANA_PASSWORD))"
+    # Password is printed once at 99-finalize (gated + followed by state.env wipe)
+    # — not on every run_ where it would land in tmux scrollback forever.
+    log "Grafana: https://${grafana_host} (admin password shown at finalize)"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

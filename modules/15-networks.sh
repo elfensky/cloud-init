@@ -118,10 +118,16 @@ configure_networks() {
     info "Consumed by firewall, intrusion, RKE2, ingress, and other modules."
     _show_interfaces
 
-    # Confirm / override public interface + IP.
+    # Confirm / override public interface + IP. Soft-warn on values the kernel
+    # doesn't recognise — typos here cascade into confusing failures in
+    # 25-firewall's `allow in on $iface` rules.
     ask_input "Public interface (WAN-facing NIC name)" "$(state_get NET_PUBLIC_IFACE)"
+    ip link show "$REPLY" &>/dev/null \
+        || warn "Interface '$REPLY' not currently visible; downstream modules may fail."
     state_set NET_PUBLIC_IFACE "$REPLY"
     ask_input "Public IPv4" "$(state_get NET_PUBLIC_IP)"
+    validate_ip "$REPLY" \
+        || warn "'$REPLY' is not a valid IPv4 address; rules referencing it will be rejected."
     state_set NET_PUBLIC_IP "$REPLY"
 
     # Does this host have a private network? Name the detected iface in the
@@ -135,8 +141,12 @@ configure_networks() {
     fi
     if ask_yesno "$priv_prompt" "$default_priv"; then
         ask_input "Private interface (intra-server NIC name)" "$(state_get NET_PRIVATE_IFACE)"
+        ip link show "$REPLY" &>/dev/null \
+            || warn "Interface '$REPLY' not currently visible; downstream modules may fail."
         state_set NET_PRIVATE_IFACE "$REPLY"
         ask_input "Private IPv4" "$(state_get NET_PRIVATE_IP)"
+        validate_ip "$REPLY" \
+            || warn "'$REPLY' is not a valid IPv4 address; rules referencing it will be rejected."
         state_set NET_PRIVATE_IP "$REPLY"
         local cur_cidr
         cur_cidr="$(state_get NET_PRIVATE_CIDR)"
@@ -144,13 +154,17 @@ configure_networks() {
         info "ingress/firewall allow-lists). Hetzner Cloud assigns /32 per NIC"
         info "even though the real subnet is /16 or /24 — the actual range is"
         info "in Hetzner Console → Networks → IP range."
+        # Stricter than validate_cidr: rejects 0.0.0.0/0 and non-RFC1918. An
+        # operator typing a wildcard here would silently open the host via
+        # 25-firewall's private allow-any, 41-docker-firewall's DOCKER-USER
+        # allow-from, and 72's proxy-real-ip-cidr PP trust zone.
         while true; do
-            ask_input "Private CIDR (for allow-lists)" "$cur_cidr"
-            if validate_cidr "$REPLY"; then
+            ask_input "Private CIDR (RFC1918 allow-list scope)" "$cur_cidr"
+            if validate_private_cidr "$REPLY"; then
                 state_set NET_PRIVATE_CIDR "$REPLY"
                 break
             fi
-            err "Invalid CIDR: $REPLY"
+            err "Must be RFC1918 (10/8, 172.16/12, or 192.168/16): $REPLY"
         done
         state_set NET_HAS_PRIVATE yes
     else
@@ -186,4 +200,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     detect_networks
     configure_networks
     run_networks
+    verify_networks || { err "Network detection verification failed"; exit 1; }
 fi
