@@ -2,6 +2,16 @@
 # =============================================================================
 # 52-webserver-apache.sh — Install Apache httpd + optional Let's Encrypt cert
 # =============================================================================
+#
+# Uses the ppa:ondrej/apache2 PPA (maintained by Ondrej Sury — the same
+# maintainer as the ondrej/php and ondrej/nginx PPAs) for the latest 2.4.x
+# point releases instead of Ubuntu's somewhat-older default.
+#
+# Note: CrowdSec has no first-class L7 bouncer for Apache. If you picked
+# CrowdSec at step 30 you get the host-level iptables bouncer (L3/L4
+# blocking). For L7 WAF on top of Apache, layer ModSecurity manually after
+# this module completes — out of scope for the wizard.
+# =============================================================================
 
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -18,11 +28,19 @@ check_webserver_apache() {
     command -v apache2 >/dev/null 2>&1 && systemctl is-active --quiet apache2
 }
 
+_install_ondrej_apache_ppa() {
+    # software-properties-common is already installed by 23-packages.
+    add-apt-repository -y ppa:ondrej/apache2
+    apt-get update -qq
+}
+
 run_webserver_apache() {
-    apt-get install -y -qq apache2
     for pkg in nginx openresty; do
         dpkg -l "$pkg" 2>/dev/null | grep -q '^ii' && apt-get remove -y -qq "$pkg"
     done
+
+    _install_ondrej_apache_ppa
+    apt-get install -y -qq apache2
 
     a2enmod ssl headers rewrite proxy proxy_http proxy_wstunnel >/dev/null
 

@@ -115,7 +115,7 @@ For Calico + WireGuard, 64-rke2-wireguard does NOT write a pre-install HelmChart
 
 ## Ordering and gating constraints
 
-- **Execution order is filename-glob sort.** Don't rename existing modules; gaps in numbering (11–14, 42–49, 54–58, 66–69, 80–98) are intentional reserve slots for insertions.
+- **Execution order is filename-glob sort.** Don't rename existing modules; gaps in numbering (11–14, 42–49, 54–58, 67–69, 80–98) are intentional reserve slots for insertions.
 - **`10` is free since the PROFILE module was deleted.** Available for a future always-first module if needed.
 - **`15-networks` runs before any network-aware module.** 25-firewall, 30-intrusion, 41-docker-firewall, 61-rke2-config, 72-ingress-nginx all consult `NET_PUBLIC_*` / `NET_PRIVATE_*`.
 - **`30-intrusion` asks its y/n AND picks fail2ban vs crowdsec in a single step.** Replaces the former three-file split (30-security-choice + 31-fail2ban + 32-crowdsec-host) — one module = one wizard step.

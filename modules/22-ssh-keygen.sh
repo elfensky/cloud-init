@@ -13,10 +13,9 @@
 #
 # Never overwrites an existing id_ed25519 — prints a notice and moves on.
 #
-# Peer pre-authorization (optional): the operator can paste a list of peer
-# public keys that get appended to the target user's authorized_keys. This
-# is the manual-mesh pattern: generate on each host, then distribute each
-# host's pubkey to every other host as authorized_keys.
+# This module only generates OUTBOUND keys. Inbound peer authorization
+# (other machines SSH-ing into this host) is handled by 66-ssh-peers,
+# which is gated on RKE2 selection.
 # =============================================================================
 
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -76,21 +75,6 @@ configure_ssh_keygen() {
     else
         state_set SSH_KEYGEN_ALSO_ROOT no
     fi
-
-    # Peer pubkeys to pre-authorize (optional). Blank line ends input.
-    if ask_yesno "Pre-authorize peer public keys now? (paste one per line, blank to end)" "n"; then
-        local peers="" line
-        info "Paste peer public keys; blank line to finish:"
-        while IFS= read -r line; do
-            [[ -z "$line" ]] && break
-            if validate_ssh_key "$line"; then
-                peers+="${line}"$'\n'
-            else
-                warn "Rejected (not a valid SSH public key): ${line:0:60}..."
-            fi
-        done
-        state_set SSH_KEYGEN_PEER_PUBKEYS "$peers"
-    fi
 }
 
 check_ssh_keygen() {
@@ -135,29 +119,6 @@ _generate_for() {
     echo ""
 }
 
-_install_peers_for() {
-    local owner="$1"
-    local peers home ssh_dir auth
-    peers="$(state_get SSH_KEYGEN_PEER_PUBKEYS)"
-    [[ -z "$peers" ]] && return 0
-    home="$(_home_for "$owner")"
-    ssh_dir="$home/.ssh"
-    auth="$ssh_dir/authorized_keys"
-
-    mkdir -p "$ssh_dir"
-    touch "$auth"
-    local line
-    while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        # Append only if not already present.
-        grep -qxF "$line" "$auth" 2>/dev/null || printf '%s\n' "$line" >> "$auth"
-    done <<< "$peers"
-    chmod 600 "$auth"
-    chmod 700 "$ssh_dir"
-    chown -R "$owner:$owner" "$ssh_dir"
-    log "Peer pubkeys installed into $auth"
-}
-
 run_ssh_keygen() {
     [[ "$(state_get SSH_KEYGEN_ENABLED)" == yes ]] || { log "ssh-keygen disabled — skipping."; return 0; }
     local primary
@@ -166,7 +127,6 @@ run_ssh_keygen() {
     if [[ "$(state_get SSH_KEYGEN_ALSO_ROOT)" == yes && "$primary" != "root" ]]; then
         _generate_for "root"
     fi
-    _install_peers_for "$primary"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

@@ -117,6 +117,20 @@ EOF
         log "CrowdSec whitelist: ${priv_cidr}"
     fi
 
+    # Install a curated default set of collections. The installer script's
+    # auto-detection does most of this already based on running services,
+    # but being explicit prevents missing coverage when a service gets
+    # added later (e.g. the operator installs nginx at step 51 after
+    # crowdsec is already running). cscli is idempotent.
+    cscli collections install \
+        crowdsecurity/linux \
+        crowdsecurity/sshd \
+        crowdsecurity/base-http-scenarios \
+        crowdsecurity/http-cve \
+        crowdsecurity/iptables \
+        2>/dev/null || warn "One or more collections failed to install; check 'cscli collections list'."
+    cscli hub upgrade >/dev/null 2>&1 || true
+
     local key
     key="$(state_get CROWDSEC_ENROLL_KEY)"
     if [[ -n "$key" ]]; then
@@ -125,7 +139,7 @@ EOF
     fi
 
     systemctl restart crowdsec
-    log "CrowdSec installed and running"
+    log "CrowdSec installed with default collections (linux, sshd, base-http, http-cve, iptables)"
 }
 
 run_intrusion() {

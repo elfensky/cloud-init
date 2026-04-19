@@ -36,21 +36,25 @@ configure_webserver_choice() {
         return 0
     fi
 
-    local default
+    # Default to OpenResty. All three install from their upstream repos for
+    # latest versions, but only OpenResty ships Lua built-in — that's what
+    # the CrowdSec L7 bouncer requires. Upstream nginx and Apache get the
+    # host-level iptables bouncer (L3/L4) from 30-intrusion; no L7 WAF via
+    # CrowdSec on those paths.
+    local default=1
     case "$(state_get WEBSERVER_KIND)" in
-        nginx)     default=1 ;;
-        apache)    default=2 ;;
-        openresty) default=3 ;;
-        *)         default=1 ;;
+        openresty) default=1 ;;
+        nginx)     default=2 ;;
+        apache)    default=3 ;;
     esac
     ask_choice "Reverse-proxy web server" "$default" \
-        "nginx|Standard nginx (Ubuntu package)" \
-        "apache|Apache httpd with mod_ssl + mod_proxy" \
-        "openresty|nginx + Lua; hosts the CrowdSec bouncer natively"
+        "openresty|nginx + Lua built-in (recommended; full CrowdSec L7 bouncer)" \
+        "nginx|Upstream nginx.org stable (no Lua; host L3/L4 CrowdSec only)" \
+        "apache|Apache httpd from ppa:ondrej/apache2 (no L7 CrowdSec bouncer)"
     case "$REPLY" in
-        1) state_set WEBSERVER_KIND nginx ;;
-        2) state_set WEBSERVER_KIND apache ;;
-        3) state_set WEBSERVER_KIND openresty ;;
+        1) state_set WEBSERVER_KIND openresty ;;
+        2) state_set WEBSERVER_KIND nginx ;;
+        3) state_set WEBSERVER_KIND apache ;;
     esac
 
     ask_input "Server name (FQDN for default vhost / LE cert; blank to skip LE)" \
