@@ -70,7 +70,7 @@ run_finalize() {
         fi
         if [[ -n "$(state_get CROWDSEC_BOUNCER_KEY)" ]]; then
             warn "  CrowdSec bouncer key:    $(state_get CROWDSEC_BOUNCER_KEY)"
-            warn "  (also in ingress-nginx ConfigMap via the Lua bouncer init container)"
+            warn "  (also in k8s Secret ingress-nginx/crowdsec-bouncer-key)"
         fi
         warn "═══════════════════════════════════════════════════════════════"
     fi
