@@ -30,7 +30,9 @@ detect_intrusion() {
 }
 
 configure_intrusion() {
-    if ! ask_yesno "Enable host-level intrusion detection?" "y"; then
+    info "Watches auth logs for brute-force attempts and adds dynamic bans."
+    info "Sits on top of the host firewall — does not replace it."
+    if ! ask_yesno "Enable host-level intrusion detection (fail2ban/crowdsec)?" "y"; then
         state_set SECURITY_TOOL none
         state_mark_skipped intrusion
         return 0

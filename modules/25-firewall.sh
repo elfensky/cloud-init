@@ -30,7 +30,9 @@ detect_firewall() {
 }
 
 configure_firewall() {
-    if ! ask_yesno "Configure UFW host firewall?" "y"; then
+    info "Host packet filter: default-deny incoming, allow SSH + selected ports."
+    info "Complements (not replaces) intrusion detection in the next step."
+    if ! ask_yesno "Configure host firewall (ufw)?" "y"; then
         state_mark_skipped firewall
         return 0
     fi

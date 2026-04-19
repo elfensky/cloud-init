@@ -30,7 +30,9 @@ detect_webserver_choice() {
 }
 
 configure_webserver_choice() {
-    if ! ask_yesno "Install a host-level reverse-proxy web server?" "n"; then
+    info "Terminates TLS and proxies to local apps — skip this if RKE2's"
+    info "ingress-nginx will handle all inbound HTTP/HTTPS on this host."
+    if ! ask_yesno "Install a host-level reverse-proxy web server (openresty/nginx/apache)?" "n"; then
         state_set WEBSERVER_KIND none
         state_mark_skipped webserver_choice
         return 0
