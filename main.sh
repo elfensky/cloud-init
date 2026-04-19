@@ -61,12 +61,18 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Map phase names to module-number prefix globs.
+# Map phase names to module-number prefix globs. Modules are profile-gated via
+# applies_<name>, so including a number range here only widens the *candidates*;
+# ones that don't apply to the current profile are filtered out.
 phase_glob() {
     case "$1" in
-        os)        echo "1?-*.sh 2?-*.sh 3?-*.sh" ;;
-        docker)    echo "4?-*.sh 5?-*.sh" ;;
-        rke2)      echo "59-*.sh 6?-*.sh" ;;
+        # "host" covers everything needed to make the machine useful for its
+        # profile: OS hardening (10-39), docker (40s), webserver + audit (50s).
+        # For k8s profile, audit (59) belongs here; docker/webserver are gated off.
+        # For docker profile, docker + webserver modules run; audit is gated off.
+        # This matches init.1.vps.sh's historic scope per profile.
+        host|os)   echo "1?-*.sh 2?-*.sh 3?-*.sh 4?-*.sh 5?-*.sh" ;;
+        rke2)      echo "6?-*.sh" ;;
         platform)  echo "7?-*.sh" ;;
         all|"")    echo "??-*.sh" ;;
         *) err "Unknown phase: $1"; exit 2 ;;
