@@ -40,6 +40,8 @@ Caveat: `/run` is tmpfs, so a full reboot clears it. Wait until the wizard finis
 
 The wizard walks `modules/NN-*.sh` in filename-sort order. Each step is gated by its `applies_<name>` — most apply unconditionally, some gate on earlier choices (e.g. Docker firewall only runs if you said yes to Docker).
 
+**Nothing runs silently.** Every step first prints a one- or two-line description of what it does, then asks for permission before making any change. Answer `n` at any prompt and the step is marked skipped in `state.env` and bypassed. Answer `y` to proceed (follow-up steps — like installing nginx after picking nginx at step 50 — default to `y`).
+
 | # | Step | Notes |
 |---|------|-------|
 | `15` | Network detection | Picks public + (optional) private interface, IP, CIDR. |

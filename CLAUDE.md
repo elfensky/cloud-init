@@ -133,7 +133,40 @@ For Calico + WireGuard, 64-rke2-wireguard does NOT write a pre-install HelmChart
 - **Inline rationale, not WHAT.** Module headers explain WHY a config choice exists (load-bearing reasons, incident history, upstream-bug references). Don't repeat what the next five lines of bash obviously do.
 - **Standalone-run scripts should also verify.** Each module's trailing `if [[ "${BASH_SOURCE[0]}" == "${0}" ]]` block should call `verify_<name>` (or `check_<name>`) after `run_` and exit non-zero if it fails. Copy the pattern from 25-firewall.
 - **Prompt labels explain the input format.** New `ask_input` calls should include a format/example hint in parentheses when the expected input isn't obvious from the label alone (good: `"Server URL (e.g. https://host:6443)"`, bad: bare `"Hostname"`). A bare label is acceptable only when the `[default]` value itself communicates the type. Same rule applies to `ask_yesno` for module-level "install X?" prompts — name the tool or stack in parentheses when the label doesn't already (good: `"Enable host-level intrusion detection (fail2ban/crowdsec)?"`, bad: bare `"Enable host-level intrusion detection?"`). This is soft-enforced via review — no CI check yet.
-- **One-to-two-line `info` context above every top-level module prompt.** For each module's entry-point `ask_yesno`, precede it with one or two `info "..."` lines explaining what the step actually does and how it relates to neighbouring steps (example: `25-firewall` clarifies it's a packet filter, not intrusion detection). Apply this uniformly across all modules — consistent shape matters more than trimming lines on prompts that look self-explanatory in isolation. Keep each line terse: these are operator hints, not a manpage. Modules whose `configure_<name>` has no top-level Y/N (e.g. `24-ssh-harden` always runs; `61-rke2-config` auto-runs when RKE2 is selected) don't need this treatment.
+- **Every module must ask permission.** `configure_<name>` is where this happens. The shape is non-negotiable, applied uniformly across all 39+ modules:
+
+  1. One to two `info "..."` lines describing what the step does and how it relates to neighbouring steps.
+  2. An `ask_yesno "<prompt with tool/stack named in parens>?" "<default>"` gate.
+  3. On decline: `state_mark_skipped <name>` then `return 0`.
+  4. On accept: the module's sub-questions and state writes follow.
+
+  Reject the temptation to make any step "silent because the default is obviously correct". The principle is *visibility over brevity*: operators should never discover, mid-wizard, that a step has already committed a change they didn't see. Modules that represent "the operator already consented upstream" (e.g. `41-docker-firewall` after picking Docker at 40, `51/52/53-webserver-*` after picking at 50, `61-65` after RKE2 yes at 60) still get the same info + y/n, just with default=`y` — the prompt exists for visibility, not to add friction.
+
+  Example (`25-firewall.sh:34-39`):
+  ```bash
+  configure_firewall() {
+      info "Host packet filter: default-deny incoming, allow SSH + selected ports."
+      info "Complements (not replaces) intrusion detection in the next step."
+      if ! ask_yesno "Configure host firewall (ufw)?" "y"; then
+          state_mark_skipped firewall
+          return 0
+      fi
+      # sub-questions here
+  }
+  ```
+
+  Audit command:
+  ```bash
+  for f in modules/*.sh; do
+      name=$(basename "$f" .sh); sfx=${name#*-}; sfx=${sfx//-/_}
+      body=$(awk "/^configure_${sfx}\(\) \{/,/^}/" "$f")
+      info_n=$(echo "$body" | grep -c '^\s*info ')
+      yn=$(echo "$body"   | grep -c 'ask_yesno')
+      [[ "$info_n" -ge 1 && "$yn" -ge 1 ]] || echo "FAIL $name (info=$info_n yesno=$yn)"
+  done
+  ```
+
+  A passing run prints nothing. A failing module is blocked from merge until the convention is applied.
 
 ## Validation commands
 
