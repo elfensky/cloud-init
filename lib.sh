@@ -45,7 +45,8 @@
 #   require_root                            Exits if not root
 #   require_ubuntu                          Exits if not Ubuntu; sets UBUNTU_VERSION
 #   require_cmd CMD                         Returns 1 if CMD is not in PATH
-#   ensure_tmux                             Re-launches script inside tmux (if available)
+#   ensure_tmux                             Re-launches script inside tmux; detects
+#                                           existing sessions and installs tmux on demand
 #   generate_token                          Prints 64 hex chars (256-bit random token) to stdout
 #   test_tcp_connectivity HOST PORT [T]     Returns 0 if TCP connection succeeds within T seconds
 #   wait_for DESC TIMEOUT INTERVAL CMD...  Poll CMD; return 0 on success, 1 on timeout
@@ -424,21 +425,69 @@ require_cmd() {
 # protection. Long-running operations (apt upgrade, RKE2 start, Helm installs)
 # survive connection drops when wrapped in tmux. The operator can reattach with
 # `tmux attach -t <session>` after reconnecting.
+#
+# Decision tree:
+#   1. Already inside tmux ($TMUX set)         → continue, no wrap.
+#   2. tmux missing                            → offer to apt-get install; if
+#                                                declined or install fails,
+#                                                prompt to continue unprotected.
+#   3. Session with our name already exists    → print attach instructions and
+#                                                exit (never overwrite — might
+#                                                be a live run from another
+#                                                operator window).
+#   4. Otherwise                               → exec into a fresh tmux session,
+#                                                forwarding original argv.
+#
+# Respects ${NON_INTERACTIVE:-0} (set by main.sh after arg-parse). In
+# non-interactive mode, skips prompts and picks the safe default.
 ensure_tmux() {
-    # Already inside tmux — nothing to do
+    # (1) Already inside tmux — nothing to do.
     [[ -n "${TMUX:-}" ]] && return 0
 
-    # tmux not available — warn and continue unprotected
+    # Prefix with "cloud-" so our sessions are identifiable and don't collide
+    # with unrelated tmux sessions the operator may already have.
+    local session_name
+    session_name="cloud-$(basename "$0" .sh | tr '.' '-')"
+
+    # (2) tmux missing — offer to install it.
     if ! command -v tmux &>/dev/null; then
-        warn "tmux is not installed — running without session protection."
-        warn "If disconnected, this script will be terminated."
+        if [[ "${NON_INTERACTIVE:-0}" -eq 0 ]]; then
+            warn "tmux is not installed. Session protection requires it."
+            if ask_yesno "Install tmux now (apt-get)?" "y"; then
+                apt-get install -y -qq tmux &>/dev/null || true
+            fi
+        else
+            # Headless mode: attempt a silent install but don't block on failure.
+            apt-get install -y -qq tmux &>/dev/null || true
+        fi
+    fi
+
+    # Still missing after install attempt — surface the risk and bail out.
+    if ! command -v tmux &>/dev/null; then
+        warn "tmux unavailable — an SSH disconnect will terminate this script."
+        if [[ "${NON_INTERACTIVE:-0}" -eq 0 ]]; then
+            if ! ask_yesno "Continue without tmux session protection?" "n"; then
+                err "Aborted by operator. Install tmux and re-run."
+                exit 1
+            fi
+        fi
         return 0
     fi
 
-    # Derive session name from script filename: init.1.vps.sh → init-1-vps
-    local session_name
-    session_name="$(basename "$0" .sh | tr '.' '-')"
+    # (3) Existing session detected — likely a previous invocation. Never
+    # overwrite; it could be a live run. Guide the operator to attach.
+    if tmux has-session -t "$session_name" 2>/dev/null; then
+        separator "tmux session '${session_name}' already exists"
+        warn "A previous run is still alive (or its tmux session wasn't closed)."
+        echo ""
+        info "  Attach:   tmux attach -t ${session_name}"
+        info "  Dismiss:  tmux kill-session -t ${session_name}  (then re-run)"
+        echo ""
+        exit 0
+    fi
 
+    # (4) Fresh re-exec. Pass through caller's argv so --phase/--answers/etc.
+    # survive the wrap.
     log "Re-launching inside tmux session '${session_name}'"
     info "  If disconnected, reattach with: tmux attach -t ${session_name}"
     exec tmux new-session -s "$session_name" -- "$0" "$@"

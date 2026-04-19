@@ -33,6 +33,10 @@ source "${SCRIPT_DIR}/state.sh"
 
 MODULE_DIR="${SCRIPT_DIR}/modules"
 
+# Capture argv BEFORE the parsing loop shifts it away — ensure_tmux re-execs
+# the script inside tmux and needs to forward the operator's original flags.
+ORIG_ARGS=("$@")
+
 # Parse args
 PHASE=""
 ONLY=""
@@ -94,9 +98,10 @@ mod_func_suffix() {
 require_root
 require_ubuntu
 
-# tmux session protection — safe if already in tmux or unavailable.
-apt-get install -y -qq tmux 2>/dev/null || true
-ensure_tmux "$@"
+# tmux session protection. ensure_tmux handles install, existing-session
+# detection, and the non-tmux fallback. Forward original argv so the re-exec'd
+# script inside tmux honours --phase/--answers/--non-interactive/etc.
+ensure_tmux ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
 
 banner "Cloud VPS Setup — main.sh" "Ubuntu ${UBUNTU_VERSION}"
 
