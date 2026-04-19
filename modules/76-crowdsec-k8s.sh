@@ -31,11 +31,23 @@ applies_crowdsec_k8s() {
 detect_crowdsec_k8s() { return 0; }
 
 configure_crowdsec_k8s() {
-    # Driven by SECURITY_TOOL from step 30 — no separate y/n here. Generate
-    # the bouncer API key if 72 hasn't already, and reuse any host-side
-    # enrollment key captured at step 30.
+    # Driven by SECURITY_TOOL from step 30 — no separate y/n here. Any
+    # host-side enrollment key from step 30 is reused.
+    #
+    # Bouncer key resolution mirrors 72's logic, so both sides converge:
+    # state.env (current run) → existing Secret in ingress-nginx namespace
+    # (recovery after 99-finalize wiped state.env, preventing drift from
+    # the already-deployed ingress DaemonSet) → fresh random.
     if [[ -z "$(state_get CROWDSEC_BOUNCER_KEY)" ]]; then
-        state_set CROWDSEC_BOUNCER_KEY "$(openssl rand -hex 32)"
+        local existing
+        existing="$(kubectl -n ingress-nginx get secret crowdsec-bouncer-key \
+            -o jsonpath='{.data.key}' 2>/dev/null | base64 -d 2>/dev/null || true)"
+        if [[ -n "$existing" ]]; then
+            state_set CROWDSEC_BOUNCER_KEY "$existing"
+            log "Reused bouncer key from ingress-nginx/crowdsec-bouncer-key Secret"
+        else
+            state_set CROWDSEC_BOUNCER_KEY "$(openssl rand -hex 32)"
+        fi
     fi
 }
 
