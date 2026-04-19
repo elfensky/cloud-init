@@ -1,11 +1,16 @@
 # shellcheck shell=bash
 # =============================================================================
-# 52-webserver-apache.sh — Install Apache httpd + optional Let's Encrypt cert
+# 52-webserver-apache.sh — Install Apache httpd (HTTP-only default vhost)
 # =============================================================================
 #
 # Uses the ppa:ondrej/apache2 PPA (maintained by Ondrej Sury — the same
 # maintainer as the ondrej/php and ondrej/nginx PPAs) for the latest 2.4.x
 # point releases instead of Ubuntu's somewhat-older default.
+#
+# Installs apache + writes a minimal HTTP-only default vhost with a
+# webroot /.well-known/acme-challenge/ alias. Cert issuance and the TLS
+# vhost are handled by step 54-tls-certs (which offers HTTP-01 / DNS-01,
+# certbot / acme.sh, and Cloudflare / Route53 / DO plugins).
 #
 # Note: CrowdSec has no first-class L7 bouncer for Apache. If you picked
 # CrowdSec at step 30 you get the host-level iptables bouncer (L3/L4
@@ -68,20 +73,8 @@ run_webserver_apache() {
 EOF
 
     apache2ctl configtest && systemctl reload apache2
-
-    _issue_letsencrypt_apache
+    # TLS vhost + cert issuance happen in step 54 (tls-certs).
     log "apache2 installed; default vhost at /etc/apache2/sites-available/000-default.conf"
-}
-
-_issue_letsencrypt_apache() {
-    local domain email
-    domain="$(state_get WEBSERVER_DOMAIN)"
-    email="$(state_get WEBSERVER_EMAIL)"
-    [[ -z "$domain" ]] && { info "No domain set; skipping Let's Encrypt."; return 0; }
-    apt-get install -y -qq certbot python3-certbot-apache
-    certbot --apache --non-interactive --agree-tos \
-        -m "${email:-admin@${domain}}" \
-        -d "$domain" --redirect || warn "certbot issuance failed — fix DNS and re-run 52-webserver-apache.sh"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

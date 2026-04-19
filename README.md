@@ -59,7 +59,8 @@ The wizard walks `modules/NN-*.sh` in filename-sort order. Each step is gated by
 | `40` | Container runtime | Optional: Podman (default — rootless, daemonless) or Docker Engine (from docker.com). If Docker is chosen, sub-prompt picks DOCKER-USER chain rules (step 41) or a provider firewall (e.g. Hetzner Cloud Firewall / AWS SG) as the port-exposure mitigation. |
 | `41` | Docker firewall | DOCKER-USER chain rules + `ip_forward=1`. Runs only when step 40 picked Docker **and** the DOCKER-USER mitigation (not the provider-firewall option). Podman doesn't have the UFW-bypass problem. |
 | `50` | Host reverse proxy selector | None / OpenResty (default) / nginx / Apache. All three install from upstream repos for latest versions. |
-| `51–53` | Install chosen proxy | Certbot + default vhost. Only **OpenResty** (`openresty.org` apt repo) ships Lua built-in and gets the CrowdSec L7 Lua bouncer; upstream **nginx** (`nginx.org`) and **Apache** (`ppa:ondrej/apache2`) rely on the host iptables bouncer from step 30 for L3/L4 only. |
+| `51–53` | Install chosen proxy | HTTP-only default vhost with ACME webroot location. Only **OpenResty** (`openresty.org`) ships Lua built-in and gets the CrowdSec L7 Lua bouncer; upstream **nginx** (`nginx.org`) and **Apache** (`ppa:ondrej/apache2`) rely on the host iptables bouncer from step 30 for L3/L4 only. TLS certs + server block are handled by step 54. |
+| `54` | TLS certificates | Optional Let's Encrypt. ACME client: certbot or acme.sh. Challenge: HTTP-01 (default) or DNS-01 (for wildcards / private hosts). DNS providers: Cloudflare / Route53 / DigitalOcean / manual. Writes the TLS vhost appropriate to the installed webserver and reloads. |
 | `60` | RKE2 preflight | Asks "Install Kubernetes?". All subsequent RKE2 steps gate on the yes. |
 | `61` | RKE2 config | Role (bootstrap/server/worker), token, CNI, WireGuard, TLS SANs, audit rules. |
 | `62` | RKE2 install | K8s apt packages + sha256-verified installer. |

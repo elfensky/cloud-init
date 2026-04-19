@@ -1,11 +1,17 @@
 # shellcheck shell=bash
 # =============================================================================
-# 51-webserver-nginx.sh — Install upstream nginx + optional Let's Encrypt cert
+# 51-webserver-nginx.sh — Install upstream nginx (HTTP-only default vhost)
 # =============================================================================
 #
 # Uses the official nginx.org apt repository (stable channel) instead of
 # Ubuntu's packaged nginx. Rationale: nginx.org ships newer releases with
 # current HTTP/3, QUIC, and performance fixes.
+#
+# This module installs nginx and writes a minimal HTTP-only default vhost
+# with a webroot /.well-known/acme-challenge/ location. Cert issuance and
+# the TLS server block are handled by step 54-tls-certs — it offers
+# certbot or acme.sh, HTTP-01 or DNS-01, with Cloudflare/Route53/DO
+# plugins for wildcards.
 #
 # Note: the upstream nginx packages DO NOT include the Lua module, so the
 # CrowdSec nginx Lua bouncer (crowdsec-nginx-bouncer) cannot be wired in on
@@ -97,41 +103,9 @@ server {
 EOF
 
     nginx -t && systemctl enable --now nginx && systemctl reload nginx
-
-    _issue_letsencrypt_nginx
+    # TLS vhost + cert issuance happen in step 54 (tls-certs), which also
+    # offers DNS-01 challenges and acme.sh as an alternative client.
     log "nginx (upstream nginx.org) installed; default vhost at /etc/nginx/conf.d/default.conf"
-}
-
-_issue_letsencrypt_nginx() {
-    local domain email
-    domain="$(state_get WEBSERVER_DOMAIN)"
-    email="$(state_get WEBSERVER_EMAIL)"
-    [[ -z "$domain" ]] && { info "No domain set; skipping Let's Encrypt."; return 0; }
-    # Use certbot's webroot plugin — the python3-certbot-nginx plugin from
-    # Ubuntu doesn't play well with upstream nginx's packaging layout.
-    apt-get install -y -qq certbot
-    mkdir -p /var/www/html
-    certbot certonly --webroot -w /var/www/html \
-        --non-interactive --agree-tos \
-        -m "${email:-admin@${domain}}" \
-        -d "$domain" || { warn "certbot issuance failed — fix DNS and re-run 51-webserver-nginx.sh"; return 0; }
-
-    # Append TLS server block. Operator can edit /etc/nginx/conf.d/* to taste.
-    cat > /etc/nginx/conf.d/default-tls.conf <<EOF
-server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    http2 on;
-    server_name ${domain};
-    ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_ciphers         HIGH:!aNULL:!MD5;
-
-    location / { return 200 'Hello from nginx\n'; add_header Content-Type text/plain; }
-}
-EOF
-    nginx -t && systemctl reload nginx
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

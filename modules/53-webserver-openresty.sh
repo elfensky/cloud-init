@@ -1,15 +1,19 @@
 # shellcheck shell=bash
 # =============================================================================
-# 53-webserver-openresty.sh — OpenResty (nginx + Lua) + optional CrowdSec
-#                             Lua bouncer
+# 53-webserver-openresty.sh — OpenResty (HTTP-only default vhost) + optional
+#                             CrowdSec Lua bouncer
 # =============================================================================
 #
 # OpenResty is nginx compiled with LuaJIT. Same config syntax as nginx, plus
 # the ability to run Lua directly in request handling — which the CrowdSec
 # bouncer uses for L7 decisions without a sidecar.
 #
-# If SECURITY_TOOL=crowdsec, we also install the LuaRocks bouncer package
-# (crowdsec-openresty-bouncer) and wire it into the vhost.
+# Installs openresty + writes a minimal HTTP-only default vhost with a
+# webroot /.well-known/acme-challenge/ location. Cert issuance and the TLS
+# vhost are handled by step 54-tls-certs.
+#
+# If SECURITY_TOOL=crowdsec, also installs the crowdsec-openresty-bouncer
+# package and wires it into the vhost for L7 enforcement.
 # =============================================================================
 
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -73,8 +77,7 @@ EOF
     fi
 
     openresty -t && systemctl enable --now openresty && systemctl reload openresty
-
-    _issue_letsencrypt_openresty
+    # TLS vhost + cert issuance happen in step 54 (tls-certs).
     log "openresty installed; default vhost at /etc/openresty/conf.d/default.conf"
 }
 
@@ -84,37 +87,6 @@ _install_crowdsec_lua_bouncer() {
     # The package drops /etc/crowdsec/bouncers/crowdsec-openresty-bouncer.yaml;
     # cscli generates an API key at install time for the local LAPI.
     log "CrowdSec OpenResty bouncer installed"
-}
-
-_issue_letsencrypt_openresty() {
-    local domain email
-    domain="$(state_get WEBSERVER_DOMAIN)"
-    email="$(state_get WEBSERVER_EMAIL)"
-    [[ -z "$domain" ]] && { info "No domain set; skipping Let's Encrypt."; return 0; }
-    apt-get install -y -qq certbot
-    # webroot challenge: requires /var/www/html to be servable on :80 (which
-    # our default vhost does via the acme-challenge location).
-    mkdir -p /var/www/html
-    certbot certonly --webroot -w /var/www/html \
-        --non-interactive --agree-tos \
-        -m "${email:-admin@${domain}}" \
-        -d "$domain" || { warn "certbot issuance failed — fix DNS and re-run 53-webserver-openresty.sh"; return 0; }
-
-    # Append TLS server block (operator can edit paths afterwards).
-    cat > /etc/openresty/conf.d/default-tls.conf <<EOF
-server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name ${domain};
-    ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_ciphers         HIGH:!aNULL:!MD5;
-
-    location / { return 200 'Hello from OpenResty\n'; add_header Content-Type text/plain; }
-}
-EOF
-    openresty -t && systemctl reload openresty
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
