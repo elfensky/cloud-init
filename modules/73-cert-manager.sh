@@ -25,9 +25,14 @@ configure_cert_manager() {
     fi
     state_set PLATFORM_CERTMGR yes
 
+    info "Let's Encrypt emails this address about renewal failures and"
+    info "upcoming expiries. Also counts toward per-account rate limits."
     ask_input "Email address for Let's Encrypt" "$(state_get PLATFORM_CERT_EMAIL)"
     state_set PLATFORM_CERT_EMAIL "$REPLY"
 
+    info "Base domain used to derive default hostnames for the platform stack"
+    info "(grafana.<domain>, rancher.<domain>, etc.). Individual modules can"
+    info "override their own hostname; this is the fallback."
     ask_input "Domain (base for cert hostnames)" "$(state_get PLATFORM_CERT_DOMAIN yourdomain.com)"
     state_set PLATFORM_CERT_DOMAIN "$REPLY"
 

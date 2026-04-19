@@ -41,6 +41,10 @@ configure_ingress_nginx() {
     fi
     state_set PLATFORM_INGRESS yes
 
+    info "External load balancer's IP on the private network. Ingress-nginx"
+    info "accepts PROXY Protocol headers only from this /32 so real client IPs"
+    info "(not the LB's) appear in logs and rate limiting — every other source"
+    info "is rejected to prevent spoofing."
     ask_input "Load balancer private IP (trust PP from this /32 only)" \
         "$(state_get PLATFORM_INGRESS_LB_IP 10.0.0.8)"
     state_set PLATFORM_INGRESS_LB_IP "$REPLY"

@@ -140,6 +140,10 @@ configure_networks() {
         state_set NET_PRIVATE_IP "$REPLY"
         local cur_cidr
         cur_cidr="$(state_get NET_PRIVATE_CIDR)"
+        info "Subnet the firewall trusts for intra-server traffic (used by"
+        info "ingress/firewall allow-lists). Hetzner Cloud assigns /32 per NIC"
+        info "even though the real subnet is /16 or /24 — the actual range is"
+        info "in Hetzner Console → Networks → IP range."
         while true; do
             ask_input "Private CIDR (for allow-lists)" "$cur_cidr"
             if validate_cidr "$REPLY"; then
