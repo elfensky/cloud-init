@@ -22,7 +22,14 @@ source "${MODULE_DIR}/../state.sh"
 applies_rke2_post() { [[ "$(state_get STEP_rke2_SELECTED)" == "yes" ]]; }
 
 detect_rke2_post()   { return 0; }
-configure_rke2_post(){ return 0; }
+configure_rke2_post() {
+    info "Drops /etc/profile.d/rke2.sh (kubectl on PATH) + a convenience"
+    info "/usr/local/bin/rke2-enable-wireguard script if Calico+WG was chosen."
+    if ! ask_yesno "Apply RKE2 post-install helpers?" "y"; then
+        state_mark_skipped rke2_post
+        return 0
+    fi
+}
 
 check_rke2_post() {
     [[ "$(state_get RKE2_ROLE)" == "worker" ]] && return 0  # nothing to post on workers

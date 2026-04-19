@@ -25,7 +25,14 @@ source "${MODULE_DIR}/../state.sh"
 
 applies_sysctl()   { return 0; }
 detect_sysctl()    { return 0; }
-configure_sysctl() { return 0; }  # No prompts; baseline is non-negotiable.
+configure_sysctl() {
+    info "Baseline kernel hardening: ASLR, SYN cookies, no source routing,"
+    info "no ICMP redirects, log martians, core dumps off, cron restricted."
+    if ! ask_yesno "Apply kernel hardening baseline?" "y"; then
+        state_mark_skipped sysctl
+        return 0
+    fi
+}
 
 check_sysctl() {
     [[ -f /etc/sysctl.d/99-hardening.conf ]] \

@@ -26,8 +26,16 @@ source "${MODULE_DIR}/../state.sh"
 
 applies_webserver_apache() { [[ "$(state_get WEBSERVER_KIND)" == apache ]]; }
 
-detect_webserver_apache()   { return 0; }
-configure_webserver_apache(){ return 0; }
+detect_webserver_apache() { return 0; }
+
+configure_webserver_apache() {
+    info "Installs Apache httpd from ppa:ondrej/apache2 (latest 2.4.x)."
+    info "Writes an HTTP-only default vhost; TLS is handled at step 54."
+    if ! ask_yesno "Install Apache (ondrej PPA)?" "y"; then
+        state_mark_skipped webserver_apache
+        return 0
+    fi
+}
 
 check_webserver_apache() {
     command -v apache2 >/dev/null 2>&1 && systemctl is-active --quiet apache2

@@ -17,6 +17,12 @@ detect_hostname() {
 }
 
 configure_hostname() {
+    info "Sets the system hostname via hostnamectl."
+    info "Used later as the RKE2 node name and in TLS SANs if applicable."
+    if ! ask_yesno "Configure the system hostname?" "y"; then
+        state_mark_skipped hostname
+        return 0
+    fi
     local cur
     cur="$(state_get HOSTNAME_FQDN "$(hostname)")"
     while true; do

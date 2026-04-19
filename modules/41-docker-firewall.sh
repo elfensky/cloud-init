@@ -37,8 +37,16 @@ applies_docker_firewall() {
         && [[ "$(state_get DOCKER_FIREWALL_MODE)" == "docker-user" ]]
 }
 
-detect_docker_firewall()    { return 0; }
-configure_docker_firewall() { return 0; }
+detect_docker_firewall() { return 0; }
+
+configure_docker_firewall() {
+    info "Docker bypasses UFW by binding container ports via its own iptables"
+    info "rules; this step closes that hole with DOCKER-USER chain + ip_forward=1."
+    if ! ask_yesno "Apply Docker firewall hardening?" "y"; then
+        state_mark_skipped docker_firewall
+        return 0
+    fi
+}
 
 check_docker_firewall() {
     iptables -L DOCKER-USER -n 2>/dev/null | grep -q "cloud-init:docker-firewall"

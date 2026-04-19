@@ -11,7 +11,14 @@ source "${MODULE_DIR}/../state.sh"
 
 applies_journald()  { return 0; }
 detect_journald()   { return 0; }
-configure_journald(){ return 0; }
+configure_journald() {
+    info "Caps journald at 1G total / 100M per file / 7-day retention."
+    info "Prevents runaway logs from filling /var on a busy host."
+    if ! ask_yesno "Configure journald disk caps?" "y"; then
+        state_mark_skipped journald
+        return 0
+    fi
+}
 check_journald() {
     [[ -f /etc/systemd/journald.conf.d/99-cap.conf ]] \
         && grep -q "SystemMaxUse=1G" /etc/systemd/journald.conf.d/99-cap.conf

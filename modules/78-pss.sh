@@ -12,7 +12,14 @@ source "${MODULE_DIR}/../state.sh"
 applies_pss() { [[ "$(state_get STEP_rke2_service_COMPLETED)" == "yes" ]]; }
 
 detect_pss()   { return 0; }
-configure_pss(){ return 0; }
+configure_pss() {
+    info "Labels platform namespaces (monitoring, ingress-nginx, cert-manager,"
+    info "cattle-system, crowdsec) with Pod Security Standards: enforce=baseline."
+    if ! ask_yesno "Apply Pod Security Standards labels?" "y"; then
+        state_mark_skipped pss
+        return 0
+    fi
+}
 check_pss()    { return 1; }
 
 verify_pss() {

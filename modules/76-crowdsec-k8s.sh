@@ -31,9 +31,13 @@ applies_crowdsec_k8s() {
 detect_crowdsec_k8s() { return 0; }
 
 configure_crowdsec_k8s() {
-    # Driven by SECURITY_TOOL from step 30 — no separate y/n here. Any
-    # host-side enrollment key from step 30 is reused.
-    #
+    info "Deploys CrowdSec LAPI + Agent + AppSec into the cluster."
+    info "Pairs with step 72's Lua bouncer in ingress-nginx (SECURITY_TOOL=crowdsec)."
+    if ! ask_yesno "Install CrowdSec in the cluster?" "y"; then
+        state_mark_skipped crowdsec_k8s
+        return 0
+    fi
+
     # Bouncer key resolution mirrors 72's logic, so both sides converge:
     # state.env (current run) → existing Secret in ingress-nginx namespace
     # (recovery after 99-finalize wiped state.env, preventing drift from

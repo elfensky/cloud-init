@@ -114,6 +114,8 @@ _show_interfaces() {
 }
 
 configure_networks() {
+    info "Detects the public (WAN) and optional private (intra-server) NICs."
+    info "Consumed by firewall, intrusion, RKE2, ingress, and other modules."
     _show_interfaces
 
     # Confirm / override public interface + IP.

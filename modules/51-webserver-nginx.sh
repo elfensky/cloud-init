@@ -29,8 +29,16 @@ source "${MODULE_DIR}/../state.sh"
 
 applies_webserver_nginx() { [[ "$(state_get WEBSERVER_KIND)" == nginx ]]; }
 
-detect_webserver_nginx()   { return 0; }
-configure_webserver_nginx(){ return 0; }
+detect_webserver_nginx() { return 0; }
+
+configure_webserver_nginx() {
+    info "Installs nginx from the upstream nginx.org stable apt channel."
+    info "Writes an HTTP-only default vhost; TLS is handled at step 54."
+    if ! ask_yesno "Install nginx (upstream stable)?" "y"; then
+        state_mark_skipped webserver_nginx
+        return 0
+    fi
+}
 
 check_webserver_nginx() {
     command -v nginx >/dev/null 2>&1 && systemctl is-active --quiet nginx

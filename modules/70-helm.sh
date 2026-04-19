@@ -13,8 +13,16 @@ HELM_VERSION="${HELM_VERSION:-v3.17.1}"
 
 applies_helm() { [[ "$(state_get STEP_rke2_service_COMPLETED)" == "yes" ]]; }
 
-detect_helm()   { return 0; }
-configure_helm(){ return 0; }
+detect_helm() { return 0; }
+
+configure_helm() {
+    info "Installs the Helm 3 CLI, pinned to a known-good version."
+    info "Required by every platform module from 71 onward."
+    if ! ask_yesno "Install the Helm CLI?" "y"; then
+        state_mark_skipped helm
+        return 0
+    fi
+}
 
 check_helm() {
     command -v helm >/dev/null 2>&1

@@ -34,6 +34,10 @@ detect_timezone() {
 configure_timezone() {
     info "Sets system timezone and enables systemd-timesyncd for NTP."
     info "UTC is recommended for servers; local zones are supported."
+    if ! ask_yesno "Configure timezone and NTP?" "y"; then
+        state_mark_skipped timezone
+        return 0
+    fi
     while true; do
         ask_input "Timezone (IANA name, e.g. UTC, Europe/Brussels, America/Los_Angeles)" \
             "$(state_get TIMEZONE UTC)"

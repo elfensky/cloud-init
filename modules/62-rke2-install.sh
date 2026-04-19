@@ -16,8 +16,16 @@ source "${MODULE_DIR}/../state.sh"
 
 applies_rke2_install() { [[ "$(state_get STEP_rke2_SELECTED)" == "yes" ]]; }
 
-detect_rke2_install()    { return 0; }
-configure_rke2_install() { return 0; }
+detect_rke2_install() { return 0; }
+
+configure_rke2_install() {
+    info "Installs K8s prereqs (ipset/conntrack/socat/...), writes the"
+    info "CNI sysctl/module bundle, then runs the sha256-verified RKE2 installer."
+    if ! ask_yesno "Download and install the RKE2 binary?" "y"; then
+        state_mark_skipped rke2_install
+        return 0
+    fi
+}
 
 check_rke2_install() {
     [[ -x /usr/local/bin/rke2 ]]

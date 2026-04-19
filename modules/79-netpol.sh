@@ -15,7 +15,14 @@ applies_netpol() {
 }
 
 detect_netpol() { return 0; }
-configure_netpol() { return 0; }
+configure_netpol() {
+    info "Default-deny ingress in monitoring ns + selective allows for Grafana."
+    info "Blocks cross-namespace access from anything not already allow-listed."
+    if ! ask_yesno "Apply NetworkPolicy default-deny + allows?" "y"; then
+        state_mark_skipped netpol
+        return 0
+    fi
+}
 
 check_netpol() {
     kubectl get networkpolicy -n monitoring default-deny-ingress >/dev/null 2>&1

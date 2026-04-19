@@ -12,7 +12,14 @@ source "${MODULE_DIR}/../state.sh"
 applies_rke2_service() { [[ "$(state_get STEP_rke2_SELECTED)" == "yes" ]]; }
 
 detect_rke2_service()   { return 0; }
-configure_rke2_service(){ return 0; }
+configure_rke2_service() {
+    info "Enables and starts rke2-server (or rke2-agent), waits for Node Ready."
+    info "Can take several minutes while RKE2 pulls container images."
+    if ! ask_yesno "Start the RKE2 systemd service?" "y"; then
+        state_mark_skipped rke2_service
+        return 0
+    fi
+}
 
 check_rke2_service() {
     local svc

@@ -18,7 +18,14 @@ source "${MODULE_DIR}/../state.sh"
 
 applies_packages()   { return 0; }
 detect_packages()    { return 0; }
-configure_packages() { return 0; }  # No prompts; the base list is non-negotiable.
+configure_packages() {
+    info "apt update + upgrade + install base tools:"
+    info "  curl wget ca-certificates gnupg jq git vim tmux htop unzip net-tools"
+    if ! ask_yesno "Install base packages?" "y"; then
+        state_mark_skipped packages
+        return 0
+    fi
+}
 
 check_packages() {
     # Cheap to re-run (apt-get update + a second install pass is a few

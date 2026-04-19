@@ -24,8 +24,17 @@ source "${MODULE_DIR}/../state.sh"
 
 applies_webserver_openresty() { [[ "$(state_get WEBSERVER_KIND)" == openresty ]]; }
 
-detect_webserver_openresty()   { return 0; }
-configure_webserver_openresty(){ return 0; }
+detect_webserver_openresty() { return 0; }
+
+configure_webserver_openresty() {
+    info "Installs OpenResty from openresty.org (nginx + LuaJIT)."
+    info "Writes HTTP-only default vhost; TLS at step 54. CrowdSec Lua bouncer"
+    info "is included if SECURITY_TOOL=crowdsec was picked at step 30."
+    if ! ask_yesno "Install OpenResty (upstream)?" "y"; then
+        state_mark_skipped webserver_openresty
+        return 0
+    fi
+}
 
 check_webserver_openresty() {
     command -v openresty >/dev/null 2>&1 && systemctl is-active --quiet openresty

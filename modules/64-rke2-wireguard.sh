@@ -24,7 +24,14 @@ applies_rke2_wireguard() {
 }
 
 detect_rke2_wireguard()   { return 0; }
-configure_rke2_wireguard(){ return 0; }
+configure_rke2_wireguard() {
+    info "Writes a HelmChartConfig for Cilium/Canal WireGuard (bootstrap only)."
+    info "Calico handles WireGuard via kubectl patch after all nodes join — see 65."
+    if ! ask_yesno "Write the WireGuard HelmChartConfig manifest?" "y"; then
+        state_mark_skipped rke2_wireguard
+        return 0
+    fi
+}
 
 check_rke2_wireguard() {
     local cni manifest

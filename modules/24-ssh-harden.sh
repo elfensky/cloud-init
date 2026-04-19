@@ -34,6 +34,12 @@ detect_ssh_harden() {
 }
 
 configure_ssh_harden() {
+    info "Locks sshd to key-only auth, disables root login, rate-limits,"
+    info "and pauses for you to verify access from a second terminal."
+    if ! ask_yesno "Harden the SSH daemon?" "y"; then
+        state_mark_skipped ssh_harden
+        return 0
+    fi
     while true; do
         ask_input "SSH port (non-standard reduces bot noise)" "$(state_get SSH_PORT 22)" '^[0-9]+$'
         if validate_port "$REPLY"; then
