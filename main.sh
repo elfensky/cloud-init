@@ -29,6 +29,7 @@
 #   sudo ./main.sh --redo 24-ssh-harden  # clear completion flag and rerun
 #   sudo ./main.sh --redo "7*"           # re-run all modules matching a glob
 #   sudo ./main.sh --reset               # wipe state.env; re-ask every question
+#   sudo ./main.sh --force-reset         # --reset without confirmation (for --non-interactive)
 #   sudo ./main.sh --answers FILE        # pre-seed state from KEY=VALUE file
 #   sudo ./main.sh --non-interactive     # no prompts; require seeded answers
 #   sudo ./main.sh --dry-run             # list remaining steps; no changes
@@ -55,9 +56,10 @@ ANSWERS_FILE=""
 NON_INTERACTIVE=0
 DRY_RUN=0
 RESET=0
+FORCE_RESET=0
 
 usage() {
-    sed -n '3,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '3,35p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -68,6 +70,7 @@ while [[ $# -gt 0 ]]; do
         --non-interactive) NON_INTERACTIVE=1; shift ;;
         --dry-run)         DRY_RUN=1; shift ;;
         --reset)           RESET=1; shift ;;
+        --force-reset)     RESET=1; FORCE_RESET=1; shift ;;
         -h|--help)         usage; exit 0 ;;
         *) err "Unknown argument: $1"; usage; exit 2 ;;
     esac
@@ -117,11 +120,24 @@ banner "Cloud VPS Setup — main.sh" "Ubuntu ${UBUNTU_VERSION}"
 # into the shell. Config files on disk (sshd, UFW, helm releases, installed
 # packages) are NOT touched — only the wizard's orchestration state is cleared.
 if [[ $RESET -eq 1 ]]; then
+    # Refuse STATE_DIR overrides — rm -rf on an operator-supplied path is a
+    # footgun (STATE_DIR=/etc sudo ./main.sh --reset would rm -rf /etc). If
+    # the override was intentional, the operator can wipe it manually.
+    if [[ "$STATE_DIR" != "/run/cloud-init-scripts" ]]; then
+        err "--reset refuses: STATE_DIR has been overridden ($STATE_DIR)."
+        err "If intentional, clean it up manually: rm -rf $STATE_DIR"
+        exit 1
+    fi
+
     if [[ -e "$STATE_FILE" ]]; then
         warn "This wipes all wizard state (answers, completion flags, generated secrets)."
         warn "Installed packages, helm releases, and config files on disk are NOT touched."
-        if [[ $NON_INTERACTIVE -eq 1 ]]; then
-            info "--non-interactive + --reset: proceeding without confirmation."
+        if [[ $FORCE_RESET -eq 1 ]]; then
+            info "--force-reset: proceeding without confirmation."
+        elif [[ $NON_INTERACTIVE -eq 1 ]]; then
+            err "--reset + --non-interactive requires --force-reset to proceed."
+            err "The confirmation prompt exists because reset is unrecoverable."
+            exit 1
         elif ! ask_yesno "Proceed with reset?" "n"; then
             err "Aborted."
             exit 1
@@ -151,16 +167,19 @@ fi
 # so typos fail loud instead of silently doing nothing.
 if [[ -n "$REDO" ]]; then
     IFS=',' read -ra REDO_LIST <<< "$REDO"
+    # Two-pass: resolve every pattern into a unique set first, then clear
+    # flags. If any pattern matches nothing, we exit BEFORE mutating state
+    # so typos don't leave completion flags partially cleared.
+    declare -A REDO_MATCHED
     for pattern in "${REDO_LIST[@]}"; do
+        [[ -z "$pattern" ]] && continue   # tolerate "a,,b" typos
         any_match=0
         for f in "$MODULE_DIR"/??-*.sh; do
             [[ -f "$f" ]] || continue
             mod_stem="$(mod_name "$f")"
             # shellcheck disable=SC2053  # intentional glob match on $pattern
             if [[ "$mod_stem" == $pattern ]]; then
-                sfx="$(mod_func_suffix "$mod_stem")"
-                state_clear_step "$sfx"
-                info "Cleared completion flag for $mod_stem"
+                REDO_MATCHED["$mod_stem"]=1
                 any_match=1
             fi
         done
@@ -168,6 +187,11 @@ if [[ -n "$REDO" ]]; then
             err "--redo pattern '$pattern' matched no modules"
             exit 2
         fi
+    done
+    for mod_stem in "${!REDO_MATCHED[@]}"; do
+        sfx="$(mod_func_suffix "$mod_stem")"
+        state_clear_step "$sfx"
+        info "Cleared completion flag for $mod_stem"
     done
 fi
 
