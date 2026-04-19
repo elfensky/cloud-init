@@ -49,7 +49,7 @@ If you rename a module, rename all five of its functions. Otherwise main.sh sile
 
 `applies_<name>` is evaluated inline every iteration, so it can consult state set by earlier modules (e.g. `STEP_rke2_SELECTED` set by 60-rke2-preflight's `configure_`). It CANNOT consult state set by the same module or any module with a HIGHER number — that state doesn't exist yet.
 
-This is how the profile gating was eliminated: `40-docker.sh` unconditionally applies and asks its own Y/N; `41-docker-firewall.sh` applies only when `STEP_docker_SELECTED=yes`, which 40 sets inside its `configure_`.
+This is how the profile gating was eliminated: `40-runtime.sh` unconditionally applies and is the single fork in the road — the operator picks Podman / Docker / RKE2 (or none). Downstream modules gate on the resulting flags: `41-docker-firewall.sh` applies when `STEP_docker_SELECTED=yes`, `60-rke2-preflight` and `61-65` + `70-79` apply when `STEP_rke2_SELECTED=yes`. 40 flips both flags on the chosen path and unsets the other so a `--redo 40-runtime` that switches platforms doesn't leak stale state to modules on the abandoned path.
 
 ---
 
@@ -119,7 +119,7 @@ For Calico + WireGuard, 64-rke2-wireguard does NOT write a pre-install HelmChart
 - **`10` is free since the PROFILE module was deleted.** Available for a future always-first module if needed.
 - **`15-networks` runs before any network-aware module.** 25-firewall, 30-intrusion, 41-docker-firewall, 61-rke2-config, 72-ingress-nginx all consult `NET_PUBLIC_*` / `NET_PRIVATE_*`.
 - **`30-intrusion` asks its y/n AND picks fail2ban vs crowdsec in a single step.** Replaces the former three-file split (30-security-choice + 31-fail2ban + 32-crowdsec-host) — one module = one wizard step.
-- **`60-rke2-preflight` is where the "Install Kubernetes?" decision lives.** It sets `STEP_rke2_SELECTED=yes` on a yes answer. Modules 61–65 and 70–79 all gate on that flag. The audit-rule setup that used to live in 59-audit is now inlined into `run_rke2_config` (61) — kept with RKE2 because that's where it's meaningful.
+- **`40-runtime` is where the "Install Kubernetes?" decision lives** (alongside Podman / Docker / none as mutually-exclusive siblings). Picking RKE2 sets `STEP_rke2_SELECTED=yes`; modules 60-65 and 70-79 all gate on that flag. `60-rke2-preflight` is the confirm+preflight step, not the decision point — its `applies_` returns false when RKE2 wasn't chosen, so an operator who picked Podman/Docker at 40 never sees any RKE2-related prompt. The audit-rule setup that used to live in 59-audit is now inlined into `run_rke2_config` (61) — kept with RKE2 because that's where it's meaningful.
 - **`62-rke2-install` writes `/etc/sysctl.d/99-rke2.conf`.** This is where `ip_forward=1`, bridge-nf-call, inotify limits, and the `rp_filter=0` CNI carve-out happen. 26-sysctl is runtime-agnostic and writes only the baseline; 41-docker-firewall handles the Docker equivalent.
 - **70–79 gate on `STEP_rke2_service_COMPLETED=yes`.** This means the wizard won't offer to install Helm/ingress-nginx/etc. until RKE2 is up and kubectl works. To deploy the platform stack after the initial run, re-invoke `sudo ./main.sh` — completed steps show as `✓ [done]` and the wizard resumes at the platform modules.
 

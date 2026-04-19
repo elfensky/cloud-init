@@ -18,19 +18,21 @@ source "${MODULE_DIR}/../lib.sh"
 # shellcheck source=/dev/null
 source "${MODULE_DIR}/../state.sh"
 
-applies_rke2_preflight() { return 0; }
+applies_rke2_preflight() {
+    [[ "$(state_get STEP_rke2_SELECTED)" == "yes" ]]
+}
 
 detect_rke2_preflight() { return 0; }
 
 configure_rke2_preflight() {
-    info "Rancher's lightweight Kubernetes distribution — unlocks later steps"
-    info "for the platform stack (ingress, cert-manager, monitoring, logging, Rancher)."
-    if ! ask_yesno "Install RKE2 (Kubernetes)?" "n"; then
-        state_mark_skipped rke2_preflight
+    info "RKE2 preflight: validates network setup before the install at 62."
+    info "You chose RKE2 at step 40; this is the last chance to back out."
+    info "Declining here skips 61-65 and the 70-79 platform stack too."
+    if ! ask_yesno "Proceed with RKE2 install?" "y"; then
         state_set STEP_rke2_SELECTED no
+        state_mark_skipped rke2_preflight
         return 0
     fi
-    state_set STEP_rke2_SELECTED yes
 }
 
 check_rke2_preflight() { return 1; }   # cheap; always rerun

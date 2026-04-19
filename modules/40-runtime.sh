@@ -1,25 +1,32 @@
 # shellcheck shell=bash
 # =============================================================================
-# 40-runtime.sh — Container runtime: none / Docker Engine / Podman
+# 40-runtime.sh — Container platform: Podman / Docker Engine / RKE2 Kubernetes
 # =============================================================================
 #
-# Offers the two common OCI runtimes:
+# Single fork in the road. Three mutually exclusive options + none:
 #
-#   Docker Engine — docker.com's `docker-ce` apt package. Large ecosystem
-#                   of tools, widely documented. Runs as a root daemon.
-#                   Manipulates iptables in a way that bypasses UFW by
-#                   default — step 41-docker-firewall closes that hole by
-#                   installing rules in the DOCKER-USER chain.
+#   Podman        — daemonless, rootless-by-default. Best for single-host
+#                   container workloads. Drop-in `docker` CLI via the
+#                   podman-docker shim. No iptables bypass. Default.
 #
-#   Podman        — daemonless, rootless-by-default. Drop-in `docker` CLI
-#                   compatibility via the podman-docker shim. No iptables
-#                   bypass, no persistent root daemon. Ubuntu 24.04 ships
-#                   podman 4.x via apt.
+#   Docker Engine — docker.com's `docker-ce` apt package. Wider ecosystem,
+#                   runs as a root daemon. Manipulates iptables in a way
+#                   that bypasses UFW; step 41-docker-firewall closes that
+#                   hole (or operator uses a provider firewall instead).
 #
-# Sets CONTAINER_RUNTIME to `docker` / `podman` / `none`. When docker is
-# selected, also sets STEP_docker_SELECTED=yes so 41-docker-firewall applies.
-# When podman or none is selected, STEP_docker_SELECTED is explicitly
-# unset — important on --redo if the operator switches between runs.
+#   RKE2          — Rancher's lightweight Kubernetes distribution. Unlocks
+#                   the platform stack at steps 60-79 (preflight, config,
+#                   install, ingress, cert-manager, monitoring, logging,
+#                   Rancher). Brings its own containerd — do not install
+#                   Podman/Docker alongside.
+#
+# Sets CONTAINER_RUNTIME to `podman` / `docker` / `rke2` / `none`.
+# Downstream gate flags are wired from the choice so mutually-exclusive
+# modules stay invisible on the wrong path:
+#   - STEP_docker_SELECTED=yes  → 41-docker-firewall applies
+#   - STEP_rke2_SELECTED=yes    → 60-65 + 70-79 platform stack applies
+# When the choice changes on --redo, the inverse flags are unset so stale
+# state from a prior run doesn't leak into the new path.
 # =============================================================================
 
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,7 +38,12 @@ source "${MODULE_DIR}/../state.sh"
 applies_runtime() { return 0; }
 
 detect_runtime() {
-    if systemctl is-active --quiet docker 2>/dev/null; then
+    # RKE2 ships its own containerd; detect it first so an existing cluster
+    # isn't misidentified as a plain Docker install.
+    if systemctl is-active --quiet rke2-server 2>/dev/null \
+        || systemctl is-active --quiet rke2-agent 2>/dev/null; then
+        state_set CONTAINER_RUNTIME rke2
+    elif systemctl is-active --quiet docker 2>/dev/null; then
         state_set CONTAINER_RUNTIME docker
     elif command -v podman >/dev/null 2>&1; then
         state_set CONTAINER_RUNTIME podman
@@ -39,35 +51,43 @@ detect_runtime() {
 }
 
 configure_runtime() {
-    info "Podman (recommended: daemonless, rootless by default, no UFW-bypass"
-    info "footgun) or Docker Engine (wider ecosystem, root daemon). Skip if"
-    info "RKE2 (step 60) will be the only container runtime on this host."
-    if ! ask_yesno "Install a container runtime (podman/docker)?" "n"; then
+    info "Pick ONE container platform for this host. Podman (single-host,"
+    info "daemonless), Docker (wider ecosystem), or RKE2 (Kubernetes; unlocks"
+    info "the 60-79 platform stack: ingress, cert-manager, monitoring, Rancher)."
+    info "Docker/Podman and RKE2 are mutually exclusive — pick one."
+    if ! ask_yesno "Install a container platform (podman/docker/rke2)?" "n"; then
         state_set CONTAINER_RUNTIME none
         state_unset STEP_docker_SELECTED 2>/dev/null || true
+        state_unset STEP_rke2_SELECTED 2>/dev/null || true
         state_mark_skipped runtime
         return 0
     fi
 
-    # Podman is idx 1 and the default. Docker is still a first-class option
-    # at idx 2 for operators who want/need it.
+    # Podman is idx 1 and the default. Docker at 2, RKE2 at 3. Default
+    # carries over from detect_runtime when a platform is already present.
     local default=1
     case "$(state_get CONTAINER_RUNTIME)" in
         podman) default=1 ;;
         docker) default=2 ;;
+        rke2)   default=3 ;;
     esac
-    ask_choice "Container runtime" "$default" \
+    ask_choice "Container platform" "$default" \
         "Podman (recommended)|daemonless; rootless by default; drop-in docker CLI via podman-docker" \
-        "Docker Engine|docker.com's docker-ce; root daemon; needs step 41 or a provider firewall"
+        "Docker Engine|docker.com's docker-ce; root daemon; needs step 41 or a provider firewall" \
+        "RKE2 (Kubernetes)|Rancher's lightweight Kubernetes; unlocks 60-79 platform stack"
     case "$REPLY" in
         1) _configure_podman ;;
         2) _configure_docker ;;
+        3) _configure_rke2   ;;
     esac
 }
 
 _configure_docker() {
     state_set CONTAINER_RUNTIME docker
     state_set STEP_docker_SELECTED yes
+    # Clear RKE2 gate so platform-stack modules stay invisible if the operator
+    # switched from rke2 → docker via --redo.
+    state_unset STEP_rke2_SELECTED 2>/dev/null || true
 
     local user default="n"
     user="$(state_get USER_NAME)"
@@ -96,9 +116,10 @@ _configure_docker() {
 
 _configure_podman() {
     state_set CONTAINER_RUNTIME podman
-    # Clear Docker-specific flag so 41-docker-firewall doesn't apply when the
-    # operator switches runtimes via --redo.
+    # Clear Docker + RKE2 gates so downstream modules stay invisible when
+    # the operator switches runtimes via --redo.
     state_unset STEP_docker_SELECTED 2>/dev/null || true
+    state_unset STEP_rke2_SELECTED 2>/dev/null || true
 
     if ask_yesno "Install podman-docker (provides a 'docker' CLI shim for compatibility)?" "y"; then
         state_set PODMAN_DOCKER_SHIM yes
@@ -112,10 +133,21 @@ _configure_podman() {
     fi
 }
 
+# RKE2 path: record the decision here. The actual install lives at 60-65 so
+# this module's run_/verify_ have nothing to do beyond confirming the flag.
+_configure_rke2() {
+    state_set CONTAINER_RUNTIME rke2
+    state_set STEP_rke2_SELECTED yes
+    # Clear Docker gate so 41-docker-firewall and _run_docker don't fire if
+    # the operator switched from docker → rke2 via --redo.
+    state_unset STEP_docker_SELECTED 2>/dev/null || true
+}
+
 check_runtime() {
     case "$(state_get CONTAINER_RUNTIME)" in
         docker) command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker ;;
         podman) command -v podman >/dev/null 2>&1 ;;
+        rke2)   [[ "$(state_get STEP_rke2_SELECTED)" == "yes" ]] ;;
         none|*) return 0 ;;
     esac
 }
@@ -126,6 +158,7 @@ verify_runtime() {
                     && systemctl is-active --quiet docker \
                     && docker info >/dev/null 2>&1 ;;
         podman) command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1 ;;
+        rke2)   [[ "$(state_get STEP_rke2_SELECTED)" == "yes" ]] ;;
         none|*) return 0 ;;
     esac
 }
@@ -209,6 +242,7 @@ run_runtime() {
     case "$(state_get CONTAINER_RUNTIME)" in
         docker) _run_docker ;;
         podman) _run_podman ;;
+        rke2)   log "RKE2 selected; installation handled by steps 60-65." ;;
         none|"") log "Container runtime: none" ;;
         *)      err "Unknown CONTAINER_RUNTIME=$(state_get CONTAINER_RUNTIME)"; return 1 ;;
     esac
