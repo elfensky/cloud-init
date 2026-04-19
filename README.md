@@ -56,8 +56,8 @@ The wizard walks `modules/NN-*.sh` in filename-sort order. Each step is gated by
 | `30` | Intrusion detection | None / fail2ban / crowdsec. Both options honor the private network. |
 | `33` | Tailscale | Optional |
 | `34` | Ubuntu Pro | Optional |
-| `40` | Docker | Installs Docker CE + compose plugin. |
-| `41` | Docker firewall | DOCKER-USER chain rules + `ip_forward=1`. Only runs when Docker was selected. |
+| `40` | Container runtime | Optional: Docker Engine (from docker.com) or Podman (rootless, daemonless). |
+| `41` | Docker firewall | DOCKER-USER chain rules + `ip_forward=1`. Only runs when Docker Engine was selected at step 40; Podman doesn't have the UFW-bypass problem. |
 | `50` | Host reverse proxy selector | None / OpenResty (default) / nginx / Apache. All three install from upstream repos for latest versions. |
 | `51–53` | Install chosen proxy | Certbot + default vhost. Only **OpenResty** (`openresty.org` apt repo) ships Lua built-in and gets the CrowdSec L7 Lua bouncer; upstream **nginx** (`nginx.org`) and **Apache** (`ppa:ondrej/apache2`) rely on the host iptables bouncer from step 30 for L3/L4 only. |
 | `60` | RKE2 preflight | Asks "Install Kubernetes?". All subsequent RKE2 steps gate on the yes. |

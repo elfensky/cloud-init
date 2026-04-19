@@ -23,7 +23,14 @@ source "${MODULE_DIR}/../lib.sh"
 # shellcheck source=/dev/null
 source "${MODULE_DIR}/../state.sh"
 
-applies_docker_firewall() { [[ "$(state_get STEP_docker_SELECTED)" == "yes" ]]; }
+applies_docker_firewall() {
+    # Both flags must agree. STEP_docker_SELECTED is the primary gate (set
+    # by 40-runtime when docker is chosen); the CONTAINER_RUNTIME check
+    # protects against stale STEP_docker_SELECTED after a state.env re-seed
+    # where the operator may have switched to podman.
+    [[ "$(state_get STEP_docker_SELECTED)" == "yes" ]] \
+        && [[ "$(state_get CONTAINER_RUNTIME)" == "docker" ]]
+}
 
 detect_docker_firewall()    { return 0; }
 configure_docker_firewall() { return 0; }
