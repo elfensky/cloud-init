@@ -148,14 +148,59 @@ for f in "${ALL_MODULES[@]}"; do
     source "$f"
 done
 
-# Filter to modules whose applies_<name> returns 0 (default: yes if undefined).
+# =============================================================================
+# Dry-run: list modules whose applies_<name> currently passes.
+# (Without running configure_, profile-gated modules will correctly show as
+# inactive; that's the nature of a dry run before any answers are given.)
+# =============================================================================
+
+if [[ $DRY_RUN -eq 1 ]]; then
+    separator "Dry run — modules applicable to the current state"
+    for f in "${ALL_MODULES[@]}"; do
+        sfx="$(mod_func_suffix "$(mod_name "$f")")"
+        if declare -F "applies_${sfx}" >/dev/null && ! "applies_${sfx}"; then
+            continue
+        fi
+        echo "  $(mod_name "$f")"
+    done
+    exit 0
+fi
+
+# =============================================================================
+# Configure pass — collect ALL answers before any destructive action.
+#
+# applies_<name> is re-evaluated inline because earlier modules populate the
+# state that later applies_ checks consult (10-profile sets PROFILE; 30-security-
+# choice sets SECURITY_TOOL; 50-webserver-choice sets WEBSERVER_KIND; etc.).
+# A single up-front filter would see empty state and exclude profile-gated
+# modules (40-docker, 60-65 rke2, 70-79 platform) from the run.
+# =============================================================================
+
+separator "Configuration"
+
+for f in "${ALL_MODULES[@]}"; do
+    sfx="$(mod_func_suffix "$(mod_name "$f")")"
+    if declare -F "applies_${sfx}" >/dev/null && ! "applies_${sfx}"; then
+        continue
+    fi
+    if declare -F "detect_${sfx}" >/dev/null; then
+        "detect_${sfx}" || true
+    fi
+    if declare -F "configure_${sfx}" >/dev/null; then
+        if [[ $NON_INTERACTIVE -eq 1 ]]; then
+            # Honour seeded values; skip prompts. Modules must self-police this.
+            export CLOUD_NON_INTERACTIVE=1
+        fi
+        "configure_${sfx}"
+    fi
+done
+
+# Build the final ACTIVE list using state as populated by the configure pass.
 ACTIVE=()
 for f in "${ALL_MODULES[@]}"; do
     sfx="$(mod_func_suffix "$(mod_name "$f")")"
     if declare -F "applies_${sfx}" >/dev/null; then
-        if "applies_${sfx}"; then
-            ACTIVE+=("$f")
-        fi
+        "applies_${sfx}" && ACTIVE+=("$f")
     else
         ACTIVE+=("$f")
     fi
@@ -165,40 +210,6 @@ if [[ ${#ACTIVE[@]} -eq 0 ]]; then
     warn "No applicable modules for profile '$(state_get PROFILE '(unset)')'"
     exit 0
 fi
-
-# =============================================================================
-# Dry-run: list and exit
-# =============================================================================
-
-if [[ $DRY_RUN -eq 1 ]]; then
-    separator "Dry run — modules that would execute"
-    for f in "${ACTIVE[@]}"; do
-        echo "  $(mod_name "$f")"
-    done
-    exit 0
-fi
-
-# =============================================================================
-# Configure pass — collect ALL answers before any destructive action
-# =============================================================================
-
-separator "Configuration"
-
-for f in "${ACTIVE[@]}"; do
-    sfx="$(mod_func_suffix "$(mod_name "$f")")"
-    # detect_<name> populates state from existing canonical config (if any).
-    if declare -F "detect_${sfx}" >/dev/null; then
-        "detect_${sfx}" || true
-    fi
-    # configure_<name> prompts (or reads seeded state in --non-interactive).
-    if declare -F "configure_${sfx}" >/dev/null; then
-        if [[ $NON_INTERACTIVE -eq 1 ]]; then
-            # Honour seeded values; skip prompts. Modules must self-police this.
-            export CLOUD_NON_INTERACTIVE=1
-        fi
-        "configure_${sfx}"
-    fi
-done
 
 # =============================================================================
 # Summary + confirmation
