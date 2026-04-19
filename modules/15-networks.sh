@@ -69,7 +69,53 @@ detect_networks() {
     fi
 }
 
+# Prints up, non-loopback interfaces with their IPv4 addresses and a role hint
+# (default route / RFC1918). Shown before the first prompt so the operator has
+# context when overriding auto-detected defaults on multi-homed hosts.
+_show_interfaces() {
+    local default_iface
+    default_iface="$(ip route show default 2>/dev/null | awk '{print $5; exit}')"
+
+    echo ""
+    info "Detected network interfaces:"
+
+    local iface addrs primary role
+    while read -r iface; do
+        # Strip @parent suffix (VLAN/veth: "eth0.100@eth0" → "eth0.100").
+        iface="${iface%@*}"
+        [[ "$iface" == "lo" ]] && continue
+
+        # All IPv4 addresses on this iface, comma-joined (CIDR form).
+        addrs="$(ip -4 -o addr show dev "$iface" 2>/dev/null \
+                 | awk '{print $4}' | paste -sd, -)"
+        addrs="${addrs:-(no IPv4)}"
+
+        role=""
+        if [[ "$iface" == "$default_iface" ]]; then
+            role="default route — public"
+        else
+            # Test the first IP against RFC1918 ranges (10/8, 172.16/12, 192.168/16).
+            primary="${addrs%%,*}"
+            primary="${primary%/*}"
+            if [[ "$primary" =~ ^10\. ]] \
+               || [[ "$primary" =~ ^192\.168\. ]] \
+               || [[ "$primary" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]]; then
+                role="RFC1918 — private candidate"
+            fi
+        fi
+
+        if [[ -n "$role" ]]; then
+            printf "  %-12s %-22s (%s)\n" "$iface" "$addrs" "$role"
+        else
+            printf "  %-12s %-22s\n" "$iface" "$addrs"
+        fi
+    done < <(ip -br link show up 2>/dev/null | awk '{print $1}')
+    echo ""
+}
+
 configure_networks() {
+    _show_interfaces
+
     # Confirm / override public interface + IP.
     ask_input "Public interface" "$(state_get NET_PUBLIC_IFACE)"
     state_set NET_PUBLIC_IFACE "$REPLY"
