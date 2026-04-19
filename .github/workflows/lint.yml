@@ -1,0 +1,39 @@
+name: lint
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: bash -n + shellcheck -x
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install shellcheck
+        # shellcheck is pre-installed on ubuntu-latest runners; this keeps the
+        # job portable to self-hosted runners without changing anything else.
+        run: sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: bash -n (syntax check)
+        run: |
+          set -euo pipefail
+          find . -name '*.sh' -not -path './.git/*' -print0 \
+            | xargs -0 -n1 bash -n
+
+      - name: shellcheck -x (static analysis)
+        # -x follows `source` directives so main.sh + lib.sh + state.sh (and
+        # each module's `source ../lib.sh`) get analyzed as a unit.
+        # -S warning starts at a pragmatic severity; tighten to `style` later
+        # if the noise floor stays clean.
+        run: shellcheck -x -S warning main.sh lib.sh state.sh modules/*.sh
