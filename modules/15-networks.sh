@@ -122,10 +122,16 @@ configure_networks() {
     ask_input "Public IPv4" "$(state_get NET_PUBLIC_IP)"
     state_set NET_PUBLIC_IP "$REPLY"
 
-    # Does this host have a private network?
-    local default_priv
+    # Does this host have a private network? Name the detected iface in the
+    # prompt so the operator doesn't have to cross-reference the preview above.
+    local default_priv priv_prompt
     default_priv="$([[ "$(state_get NET_HAS_PRIVATE no)" == yes ]] && echo y || echo n)"
-    if ask_yesno "Does this host have a private (intra-server) network?" "$default_priv"; then
+    if [[ -n "$(state_get NET_PRIVATE_IFACE)" ]]; then
+        priv_prompt="Use private network on $(state_get NET_PRIVATE_IFACE) ($(state_get NET_PRIVATE_IP))?"
+    else
+        priv_prompt="Does this host have a private (intra-server) network?"
+    fi
+    if ask_yesno "$priv_prompt" "$default_priv"; then
         ask_input "Private interface (intra-server NIC name)" "$(state_get NET_PRIVATE_IFACE)"
         state_set NET_PRIVATE_IFACE "$REPLY"
         ask_input "Private IPv4" "$(state_get NET_PRIVATE_IP)"
