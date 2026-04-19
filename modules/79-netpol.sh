@@ -10,7 +10,7 @@ source "${MODULE_DIR}/../lib.sh"
 source "${MODULE_DIR}/../state.sh"
 
 applies_netpol() {
-    [[ "$(state_get PROFILE)" == k8s ]] \
+    [[ "$(state_get STEP_rke2_service_COMPLETED)" == "yes" ]] \
         && [[ "$(state_get PLATFORM_MONITORING)" == yes || "$(state_get PLATFORM_LOGGING)" == yes ]]
 }
 

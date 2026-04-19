@@ -9,7 +9,7 @@ source "${MODULE_DIR}/../lib.sh"
 # shellcheck source=/dev/null
 source "${MODULE_DIR}/../state.sh"
 
-applies_rke2_service() { [[ "$(state_get PROFILE)" == k8s ]]; }
+applies_rke2_service() { [[ "$(state_get STEP_rke2_SELECTED)" == "yes" ]]; }
 
 detect_rke2_service()   { return 0; }
 configure_rke2_service(){ return 0; }
@@ -88,9 +88,24 @@ run_rke2_service() {
     [[ "$role" != "worker" ]] && kubectl get nodes -o wide 2>/dev/null || true
 }
 
+verify_rke2_service() {
+    local svc
+    svc="$(_rke2_service_name)"
+    systemctl is-active --quiet "$svc" || return 1
+    # Servers also need a kubectl handshake; worker verification ends at
+    # service-active because there's no kubeconfig locally.
+    if [[ "$(state_get RKE2_ROLE)" != "worker" ]]; then
+        export PATH="$PATH:/var/lib/rancher/rke2/bin"
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        kubectl get nodes >/dev/null 2>&1 || return 1
+    fi
+    return 0
+}
+
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     require_root
     state_init
     applies_rke2_service || exit 0
     run_rke2_service
+    verify_rke2_service || { err "RKE2 service verification failed"; exit 1; }
 fi

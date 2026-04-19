@@ -3,9 +3,10 @@
 # 29-unattended.sh — unattended-upgrades for automatic security patching
 # =============================================================================
 #
-# K8s profile: no auto-reboot (use kured for coordinated node reboots).
-# docker/bare:  reboot at 04:00 — patches that require a reboot stay pending
-# indefinitely otherwise, leaving the host running a vulnerable kernel.
+# Operator chooses whether to enable at all, and whether to auto-reboot at
+# 04:00 UTC when a security update requires it. Default auto-reboot is OFF
+# when RKE2 was selected earlier (K8s nodes need coordinated reboots via
+# kured) and ON otherwise.
 # =============================================================================
 
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,21 +19,30 @@ applies_unattended() { return 0; }
 detect_unattended()  { return 0; }
 
 configure_unattended() {
-    if ask_yesno "Enable unattended security upgrades?" "y"; then
-        state_set UNATTENDED_ENABLED yes
+    if ! ask_yesno "Enable unattended security upgrades?" "y"; then
+        state_mark_skipped unattended
+        return 0
+    fi
+
+    # Reboot default: off when RKE2 was selected (use kured), on otherwise.
+    local reboot_default="y"
+    [[ "$(state_get STEP_rke2_SELECTED)" == "yes" ]] && reboot_default="n"
+
+    if ask_yesno "Auto-reboot at 04:00 when a kernel update requires it?" "$reboot_default"; then
+        state_set UNATTENDED_AUTO_REBOOT yes
     else
-        state_set UNATTENDED_ENABLED no
+        state_set UNATTENDED_AUTO_REBOOT no
     fi
 }
 
 check_unattended() {
-    [[ "$(state_get UNATTENDED_ENABLED no)" == yes ]] || return 0
-    systemctl is-active --quiet unattended-upgrades && [[ -f /etc/apt/apt.conf.d/50unattended-upgrades ]]
+    [[ -f /etc/apt/apt.conf.d/50unattended-upgrades ]] \
+        && systemctl is-active --quiet unattended-upgrades
 }
 
-run_unattended() {
-    [[ "$(state_get UNATTENDED_ENABLED)" == yes ]] || { log "Unattended upgrades disabled."; return 0; }
+verify_unattended() { check_unattended; }
 
+run_unattended() {
     apt-get install -y -qq unattended-upgrades 2>/dev/null
 
     cat > /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
@@ -42,14 +52,13 @@ APT::Periodic::Download-Upgradeable-Packages "1";
 APT::Periodic::AutocleanInterval "7";
 EOF
 
-    local profile reboot_block
-    profile="$(state_get PROFILE)"
-    if [[ "$profile" == "k8s" ]]; then
-        reboot_block='// K8s: auto-reboot disabled — use kured for coordinated node reboots
-Unattended-Upgrade::Automatic-Reboot "false";'
-    else
+    local reboot_block
+    if [[ "$(state_get UNATTENDED_AUTO_REBOOT no)" == "yes" ]]; then
         reboot_block='Unattended-Upgrade::Automatic-Reboot "true";
 Unattended-Upgrade::Automatic-Reboot-Time "04:00";'
+    else
+        reboot_block='// Auto-reboot disabled (use kured or manual reboots on K8s nodes)
+Unattended-Upgrade::Automatic-Reboot "false";'
     fi
 
     cat > /etc/apt/apt.conf.d/50unattended-upgrades <<EOF
@@ -66,17 +75,14 @@ Unattended-Upgrade::SyslogEnable "true";
 EOF
 
     systemctl enable --now unattended-upgrades
-    if [[ "$profile" == "k8s" ]]; then
-        log "Unattended upgrades configured (security patches, auto-reboot disabled)"
-    else
-        log "Unattended upgrades configured (security patches, reboot at 04:00)"
-    fi
+    log "Unattended upgrades enabled (auto-reboot=$(state_get UNATTENDED_AUTO_REBOOT))"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     require_root
     state_init
     configure_unattended
-    check_unattended && { log "Already configured; skipping."; exit 0; }
+    state_skipped unattended && exit 0
     run_unattended
+    verify_unattended || { err "unattended-upgrades verification failed"; exit 1; }
 fi

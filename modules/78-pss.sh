@@ -9,11 +9,27 @@ source "${MODULE_DIR}/../lib.sh"
 # shellcheck source=/dev/null
 source "${MODULE_DIR}/../state.sh"
 
-applies_pss() { [[ "$(state_get PROFILE)" == k8s ]]; }
+applies_pss() { [[ "$(state_get STEP_rke2_service_COMPLETED)" == "yes" ]]; }
 
 detect_pss()   { return 0; }
 configure_pss(){ return 0; }
 check_pss()    { return 1; }
+
+verify_pss() {
+    # For every expected namespace that EXISTS, it must carry the enforce
+    # label. If no expected namespaces exist yet (none of the platform
+    # modules were selected), there's nothing to verify — that's fine.
+    local ns present=0
+    for ns in monitoring ingress-nginx cert-manager cattle-system crowdsec; do
+        kubectl get namespace "$ns" >/dev/null 2>&1 || continue
+        present=1
+        kubectl get namespace "$ns" \
+            -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}' \
+            2>/dev/null | grep -q baseline || return 1
+    done
+    [[ $present -eq 0 ]] && log "No PSS-target namespaces exist yet; nothing to verify"
+    return 0
+}
 
 run_pss() {
     local ns

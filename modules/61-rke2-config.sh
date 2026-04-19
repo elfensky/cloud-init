@@ -15,7 +15,7 @@ source "${MODULE_DIR}/../lib.sh"
 # shellcheck source=/dev/null
 source "${MODULE_DIR}/../state.sh"
 
-applies_rke2_config() { [[ "$(state_get PROFILE)" == k8s ]]; }
+applies_rke2_config() { [[ "$(state_get STEP_rke2_SELECTED)" == "yes" ]]; }
 
 detect_rke2_config() {
     # Try to recover role and IP from an existing config.yaml.
@@ -324,7 +324,45 @@ AUDIT
         log "Audit policy written"
     fi
 
+    # Host-level auditd rules for K8s (used to live in 59-audit.sh; folded
+    # here because these rules are only meaningful when RKE2 is configured).
+    cat > /etc/audit/rules.d/rke2.rules <<'EOF'
+# RKE2 binaries — detect unauthorized execution or replacement.
+-w /usr/local/bin/rke2 -p x -k rke2
+-w /var/lib/rancher/rke2/bin/ -p x -k rke2-bins
+
+# RKE2/Rancher config and data.
+-w /etc/rancher/ -p wa -k rancher-config
+-w /var/lib/rancher/ -p wa -k rancher-data
+
+# Identity files.
+-w /etc/passwd -p wa -k identity
+-w /etc/group -p wa -k identity
+-w /etc/shadow -p wa -k identity
+
+# Sudoers.
+-w /etc/sudoers -p wa -k sudo-changes
+-w /etc/sudoers.d/ -p wa -k sudo-changes
+
+# Home directories (authorized_keys changes).
+-w /home/ -p wa -k home-changes
+
+# Cron (persistence via scheduled tasks).
+-w /etc/crontab -p wa -k cron
+-w /etc/cron.d/ -p wa -k cron
+EOF
+
+    systemctl enable auditd --now 2>/dev/null || true
+    augenrules --load 2>/dev/null || systemctl restart auditd 2>/dev/null || true
+    log "Audit rules installed (RKE2, identity, sudo, cron)"
+
     log "config.yaml written to /etc/rancher/rke2/config.yaml"
+}
+
+verify_rke2_config() {
+    [[ -f /etc/rancher/rke2/config.yaml ]] \
+        && grep -q "node-ip: \"$(state_get RKE2_NODE_IP)\"" /etc/rancher/rke2/config.yaml \
+        && [[ -f /etc/audit/rules.d/rke2.rules ]]
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
@@ -334,4 +372,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     detect_rke2_config
     configure_rke2_config
     run_rke2_config
+    verify_rke2_config || { err "RKE2 config verification failed"; exit 1; }
 fi

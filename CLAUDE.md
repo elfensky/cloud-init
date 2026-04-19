@@ -2,107 +2,136 @@
 
 Maintainer notes for this repo. User-facing docs are in `README.md`.
 
-This file focuses on the **non-obvious** — contract edges, load-bearing safety pauses, ordering constraints, and pitfalls that aren't visible from the file tree. If you're editing a module, skim the relevant gotcha before touching anything.
+This file focuses on non-obvious edges — contract, state lifecycle, load-bearing safety pauses, ordering constraints, and pitfalls that aren't visible from the file tree. Skim the relevant section before touching a module.
 
 ---
 
-## Module interface contract
+## Wizard model
 
-Every `modules/NN-*.sh` defines five functions, snake_cased from the file stem (`25-firewall` → suffix `firewall`; `22-ssh-keygen` → suffix `ssh_keygen`):
+`main.sh` is a linear yes/no wizard. It walks `modules/NN-*.sh` in filename-sort order, and for each module:
 
-| Function | Side effects | When it runs |
-|----------|--------------|--------------|
-| `applies_<name>` | none | Inline, every time main.sh needs to decide whether to touch this module. |
-| `detect_<name>` | reads canonical config files; writes state | Once, immediately before `configure_<name>` in the configure-pass. |
-| `configure_<name>` | prompts; writes state | Once, after `detect_`. NEVER writes to disk outside state.env. |
-| `check_<name>` | reads system state | Once, before `run_<name>`. Returns 0 → skip run as a no-op. |
-| `run_<name>` | writes canonical config files | Once, in the run-pass. Must be idempotent (`cat >` overwrite, never `>>`). |
+1. Checks `STEP_<name>_COMPLETED` in state. If set (and `--redo <name>` wasn't passed), prints `✓ <name> [done at <ts>]` and continues.
+2. `applies_<name>` — re-evaluated inline. If false, the step is invisible this run. `applies_` gates on state set by EARLIER modules (e.g. `STEP_rke2_SELECTED=yes` makes the 61–65 modules apply).
+3. `detect_<name>` — reads canonical config files to populate prompt defaults.
+4. `configure_<name>` — asks the operator's top-level Y/N + sub-questions. If Y/N is no, the module calls `state_mark_skipped <name>` and `configure_` returns; main.sh sees the flag and moves on.
+5. `run_<name>` — executes immediately. Per-step safety pauses live here.
+6. `verify_<name>` (or `check_<name>` as fallback) — reads canonical state to confirm the action persisted. If it fails, main.sh prints a clear error and exits non-zero WITHOUT marking the step completed. The operator fixes and re-runs; the wizard resumes at the failed step.
+7. `state_mark_completed <name>` — records completion with an ISO timestamp.
 
-Each module also has a trailing `if [[ "${BASH_SOURCE[0]}" == "${0}" ]]` block so it can run standalone (`./modules/25-firewall.sh`). Standalone invocation does its own `require_root → state_init → detect → configure → check → run`.
+There is no "configure-all-then-run-all" batch. Each step asks, executes, verifies, and moves on. Per-step safety pauses (SSH secondary-terminal confirm, etcd quorum warning, Proxy Protocol ordering) replace the old batch-summary confirmation.
 
-### Gotcha: `applies_*` runs BEFORE the module owns PROFILE
+### Module contract
 
-`main.sh` runs the configure-pass over **all** modules, re-evaluating `applies_<name>` inline each time. This is deliberate — `10-profile` sets `PROFILE` in its `configure_`, so `applies_docker` / `applies_rke2_*` / `applies_platform_*` can only see it *after* 10 has run. A single up-front filter would see `PROFILE=""` and incorrectly exclude every profile-gated module.
+Every `modules/NN-*.sh` defines:
 
-**Rule:** `applies_<name>` may only depend on state set by modules with a strictly smaller NN prefix. Don't depend on state set by your own or later modules — it won't be there yet.
+| Function | Required? | Side effects | When main.sh calls it |
+|----------|-----------|--------------|-----------------------|
+| `applies_<name>` | yes | none (pure read) | Every iteration; filters the step out when it shouldn't run. |
+| `detect_<name>` | yes (can be no-op) | reads canonical config; writes state | Before `configure_` each time the step is active. |
+| `configure_<name>` | yes (can be no-op) | prompts + writes state | After `detect_`. Must call `state_mark_skipped` if the operator declines. |
+| `check_<name>` | optional | reads canonical state | Not called by main.sh directly unless `verify_` is absent; used as the short-circuit check inside standalone-run scripts. |
+| `verify_<name>` | optional (falls back to `check_`) | reads canonical state | After `run_`. Must return 0 or the step is NOT marked completed. |
+| `run_<name>` | yes | writes canonical config files | After a non-skip `configure_`. Must be idempotent (`cat >` truncating writes, never `>>`). |
 
-### Gotcha: main.sh filename → function name mapping
+Each module also has a trailing `if [[ "${BASH_SOURCE[0]}" == "${0}" ]]` block so it runs standalone: `./modules/25-firewall.sh` does its own `require_root → state_init → detect → configure → run → verify` cycle independent of main.sh.
 
-`mod_func_suffix` strips the numeric prefix, then replaces `-` with `_`. So:
+### Gotcha: function-name derivation
+
+`mod_func_suffix` strips the numeric prefix and replaces `-` with `_`:
 
 - `25-firewall` → `firewall`
 - `22-ssh-keygen` → `ssh_keygen`
-- `52-webserver-apache` → `webserver_apache`
+- `30-intrusion` → `intrusion`
 
-If you rename a module file, rename all five of its functions to match. Otherwise main.sh will fail to find them (no error — it silently skips).
+If you rename a module, rename all five of its functions. Otherwise main.sh silently skips it — there's no "function not found" error because main.sh uses `declare -F` to check existence.
+
+### Gotcha: `applies_` ordering
+
+`applies_<name>` is evaluated inline every iteration, so it can consult state set by earlier modules (e.g. `STEP_rke2_SELECTED` set by 60-rke2-preflight's `configure_`). It CANNOT consult state set by the same module or any module with a HIGHER number — that state doesn't exist yet.
+
+This is how the profile gating was eliminated: `40-docker.sh` unconditionally applies and asks its own Y/N; `41-docker-firewall.sh` applies only when `STEP_docker_SELECTED=yes`, which 40 sets inside its `configure_`.
 
 ---
 
 ## State model
 
-`state.sh` writes `/run/cloud-init-scripts/state.env`. Three non-obvious properties:
+`/run/cloud-init-scripts/state.env` (0600, tmpfs) holds everything for the duration of the run:
 
-1. **Ephemeral.** `/run` is tmpfs. The file also gets `rm -f`'d by `trap state_cleanup EXIT` in main.sh. So secrets never touch persistent disk (good), but also — a crash mid-run leaves a recoverable snapshot *only* until the next reboot (fine for debugging, not for resume-later).
-2. **Canonical source of truth is the real config files**, NOT state.env. Modules' `detect_<name>` functions read `/etc/ssh/sshd_config.d/...`, `ufw status`, `cscli bouncers list`, `/etc/rancher/rke2/config.yaml`, etc. to reconstruct state. Sub-scripts invoked standalone don't have state.env and must work from canonical state alone.
-3. **`state_set` writes through.** Each call rewrites `$STATE_FILE` atomically (tmp + mv). This is required because modules source each other occasionally and a stale in-memory value would drift from the file that other modules read.
+- Operator answers (hostname, user name, SSH key, ports, CIDRs).
+- Generated secrets (RKE2 token, Grafana admin password, CrowdSec bouncer key, Rancher bootstrap password, SSH Ed25519 pubkey).
+- Step flags: `STEP_<name>_SELECTED`, `STEP_<name>_COMPLETED`, `STEP_<name>_COMPLETED_AT`, `STEP_<name>_SKIPPED`, `STEP_<name>_SKIPPED_AT`.
 
-### Gotcha: `--answers FILE` loads BEFORE state_init
+### Gotcha: the state file is NOT trap-cleaned
 
-When `--answers` is passed, `state_load_answers` sources the file and calls `state_set` for each key. This happens after `state_init`. Values in the answers file override anything state_init seeded; they do NOT override values set by subsequent `configure_<name>` prompts. In `--non-interactive` mode, no prompts happen, so the answers file is authoritative.
+The previous iteration of this repo had `trap state_cleanup EXIT` in main.sh. That's gone. The state file is deleted ONLY by the terminal `99-finalize.sh` step after a clean run — not by Ctrl+C, not by a failed step, not by `set -e` tripping. That's how resume works.
+
+### Gotcha: secrets live in state.env during the run
+
+State.env holds secrets while the wizard is running. The terminal `99-finalize.sh` prints them to stdout for the operator to copy, then wipes the file. There is no separate `/root/platform-credentials.txt` — this was intentionally removed. If the operator misses the stdout dump, the secrets are still retrievable from their canonical locations:
+
+- RKE2 token: `/etc/rancher/rke2/config.yaml` (`token: "..."`)
+- Grafana admin: `kubectl get secret -n monitoring kube-prometheus-stack-grafana -o jsonpath='{.data.admin-password}' | base64 -d`
+- Rancher bootstrap: set in the Helm release; resettable via `kubectl -n cattle-system patch secret bootstrap-secret`.
+- CrowdSec bouncer key: in the ingress-nginx ConfigMap / Lua init container env.
+- SSH host key: `~/.ssh/id_ed25519.pub`.
+
+Step 99's verify asserts that `/run/cloud-init-scripts/` no longer exists. If deletion fails, the wizard exits non-zero with a loud message — secrets on tmpfs are still gone at reboot, but manual cleanup is safer.
+
+### Gotcha: `/run` is tmpfs
+
+`/run/cloud-init-scripts/state.env` disappears on reboot. If the operator expects to interrupt the wizard and continue across a full machine reboot, they have to re-walk completed steps. Acceptable tradeoff — tmpfs is the right home for mid-run secrets.
 
 ---
 
 ## Load-bearing safety checks — DO NOT REMOVE
 
-These pauses/warnings exist because specific real-world incidents would otherwise be unrecoverable without console access. Preserve them when editing.
+These pauses and rollbacks exist because specific real-world incidents would otherwise be unrecoverable without console access. Preserve them when editing.
 
-### `24-ssh-harden`: secondary-terminal confirmation
+### `24-ssh-harden`: secondary-terminal confirm
 
-After writing `/etc/ssh/sshd_config.d/99-hardening.conf` and reloading sshd, the module pauses and prompts: *"Have you verified SSH access in another terminal?"*. On `n`, it **rolls back the drop-in file and reloads sshd** before exiting. Removing this pause turns any sshd_config mistake (wrong port, broken PAM stack, typo'd key) into permanent lockout on a remote box. Keep it.
+After writing `/etc/ssh/sshd_config.d/99-hardening.conf` and reloading sshd, the module pauses: *"Have you verified SSH access in another terminal?"* On `n`, it removes the drop-in file and reloads sshd before exiting. Removing this turns any sshd_config mistake (wrong port, broken PAM stack, typo'd key) into a permanent lockout on a remote box.
 
-### `25-firewall`: UFW SSH rule ordering
+### `25-firewall`: UFW rule ordering
 
-The run function does `ufw --force reset` → `default deny incoming` → **add SSH rule** → allow-all on private → `ufw --force enable`. Reordering to enable UFW before the SSH allow rule locks the operator out mid-script. The SSH rule must land first.
+The run function: `ufw --force reset` → `default deny incoming` → **add SSH rule** → allow-all on private → `ufw --force enable`. Reordering to enable UFW before the SSH allow rule locks the operator out mid-script.
 
-### `63-rke2-service`: etcd quorum, one-at-a-time
+### `40-docker` / `41-docker-firewall`: Docker bypasses UFW
 
-Joining a second server node while the first isn't `Ready` yet can split-brain the etcd Raft group. `61-rke2-config` displays the quorum warning at configure time; removing it risks unrecoverable cluster state. Workers are fine to join in parallel (no etcd membership change).
+Docker's daemon inserts its own rules into `iptables FORWARD` that run BEFORE UFW's rules, so bound container ports become reachable from the public internet even when UFW default-deny is set. 41 fixes this by installing explicit rules in the `DOCKER-USER` chain: allow from `NET_PRIVATE_CIDR`, then default-drop. If 41 is skipped, any `docker run -p 80:80` exposes the container publicly regardless of UFW state. Do not let anyone "simplify" this module away.
+
+### `63-rke2-service`: etcd quorum
+
+Joining a second server while the first isn't `Ready` yet can split-brain the etcd Raft group. 61-rke2-config displays the quorum warning at configure time; the operator MUST wait between server joins. Workers are fine in parallel (no etcd membership change).
 
 ### `72-ingress-nginx`: Proxy Protocol ordering
 
-The chart deploys nginx with `use-proxy-protocol: "true"`. After it's up, the module pauses with *"Enable Proxy Protocol on LB ports 80/443 — DO NOT enable it on port 6443"*. If you enable PP on the LB before nginx is ready, clients get 400s. If you enable it on 6443, kubectl stops working (it doesn't speak PP). Keep the warning.
+The chart deploys nginx with `use-proxy-protocol: "true"`. After it's up, 72 pauses with: *"Enable Proxy Protocol on LB ports 80/443 — DO NOT enable it on port 6443."* If you enable PP on the LB before nginx is ready, clients get 400s. If you enable it on 6443, kubectl stops working (it doesn't speak PP).
 
 ### `65-rke2-post`: Calico WireGuard is post-install only
 
-For Calico+WireGuard, 64-rke2-wireguard does **not** write a HelmChartConfig (Calico has no pre-install manifest for WG). Instead, 65-rke2-post drops `/usr/local/bin/rke2-enable-wireguard` and tells the operator to run it after **all nodes** have joined. Enabling Calico WG before all nodes have the WG kernel module loaded breaks pod connectivity on the stragglers.
+For Calico + WireGuard, 64-rke2-wireguard does NOT write a pre-install HelmChartConfig (Calico has no such manifest for WG). Instead, 65 drops `/usr/local/bin/rke2-enable-wireguard` and tells the operator to run it **after all nodes have joined**. Enabling Calico WG before all nodes have the WG kernel module breaks pod connectivity on the stragglers.
 
 ---
 
 ## Ordering and gating constraints
 
-- **Module execution order is filename-glob sort.** Don't rename existing modules; renumber carefully if you insert new ones. Gaps in the numbering (e.g. 11–14 are free) are intentional reserve.
-- **`10-profile` runs first.** Everything downstream reads `PROFILE`. Don't let anything applies-check before 10.
-- **`15-networks` runs before any networking-aware module.** `25-firewall`, `31-fail2ban`, `32-crowdsec-host`, `41-docker-firewall`, `61-rke2-config`, `72-ingress-nginx` all consult `NET_PUBLIC_*` / `NET_PRIVATE_*`.
-- **`30-security-choice` runs before 31 and 32.** Sets `SECURITY_TOOL`; 31 applies only if fail2ban, 32 only if crowdsec.
-- **`70-helm` runs before any other platform module.** All Helm-based modules assume `helm` is on `$PATH`.
-- **`76-crowdsec-k8s` and `72-ingress-nginx`.** If both are selected, 72 (numerically first) installs ingress with the CrowdSec Lua bouncer init container pointing at the crowdsec service. 76 installs the LAPI afterwards. The Lua bouncer's connection retries are forgiving — it tolerates LAPI not being up yet. If you reorder or split these, keep the init container's retry logic or you'll get a crash loop.
-
-### Gotcha: Docker bypasses UFW
-
-Docker's daemon inserts its own `iptables` rules that run **before** the UFW ones. Exposed container ports become reachable from the internet even when UFW default-deny is set. `41-docker-firewall` fixes this by installing explicit rules in the `DOCKER-USER` chain: allow from `NET_PRIVATE_CIDR`, then default-drop. If you skip 41, any `docker run -p 80:80` container is on the public internet regardless of UFW state. Document this in user-facing output.
-
-### Gotcha: K8s ingress is not a choice
-
-`72-ingress-nginx` is the only in-cluster ingress controller; there's no "apache at the K8s layer" option. Reasons: `ingress-apache` is not a maintained mainstream controller; `ingress-nginx` is nginx + Lua (the same engine as OpenResty); the CrowdSec Lua bouncer only plugs into ingress-nginx. The host-level web-server choice (`50-webserver-choice.sh`) is for Docker/bare profiles only.
+- **Execution order is filename-glob sort.** Don't rename existing modules; gaps in numbering (11–14, 42–49, 54–58, 66–69, 80–98) are intentional reserve slots for insertions.
+- **`10` is free since the PROFILE module was deleted.** Available for a future always-first module if needed.
+- **`15-networks` runs before any network-aware module.** 25-firewall, 30-intrusion, 41-docker-firewall, 61-rke2-config, 72-ingress-nginx all consult `NET_PUBLIC_*` / `NET_PRIVATE_*`.
+- **`30-intrusion` asks its y/n AND picks fail2ban vs crowdsec in a single step.** The old 3-file split (30-security-choice + 31-fail2ban + 32-crowdsec-host) was merged in this commit for wizard simplicity.
+- **`60-rke2-preflight` is where the "Install Kubernetes?" decision lives.** It sets `STEP_rke2_SELECTED=yes` on a yes answer. Modules 61–65 and 70–79 all gate on that flag. The audit-rule setup that used to live in 59-audit is now inlined into `run_rke2_config` (61) — kept with RKE2 because that's where it's meaningful.
+- **`62-rke2-install` writes `/etc/sysctl.d/99-rke2.conf`.** This is where `ip_forward=1`, bridge-nf-call, inotify limits, and the `rp_filter=0` CNI carve-out happen. 26-sysctl is runtime-agnostic and writes only the baseline; 41-docker-firewall handles the Docker equivalent.
+- **70–79 gate on `STEP_rke2_service_COMPLETED=yes`.** This means the wizard won't offer to install Helm/ingress-nginx/etc. until RKE2 is up and kubectl works. To deploy the platform stack after the initial run, re-invoke `sudo ./main.sh` — completed steps show as `✓ [done]` and the wizard resumes at the platform modules.
 
 ---
 
 ## Conventions
 
 - **Idempotent by overwrite.** Every module that writes a config file uses `cat > file <<EOF` (truncating write), never `>>` (append). Re-running produces identical end state.
-- **One responsibility per module.** If a module is doing two unrelated things (e.g. installing nginx *and* setting up a systemd timer), split it. Short files are reviewable.
+- **One responsibility per module.** If you're adding two unrelated things to a module, split it. Numbering has reserve slots specifically for insertion.
 - **Shared helpers live in `lib.sh`.** Don't reinvent `ask_*`, `validate_*`, `detect_*`, `wait_for`, `require_root`, `ensure_tmux` in modules. Add to `lib.sh` if a pattern reappears.
-- **Inline rationale, not WHAT.** Module headers explain *why* a config choice exists (load-bearing reasons, incident history, upstream bug references). Don't repeat what the next five lines of bash obviously do.
+- **Inline rationale, not WHAT.** Module headers explain WHY a config choice exists (load-bearing reasons, incident history, upstream-bug references). Don't repeat what the next five lines of bash obviously do.
+- **Standalone-run scripts should also verify.** Each module's trailing `if [[ "${BASH_SOURCE[0]}" == "${0}" ]]` block should call `verify_<name>` (or `check_<name>`) after `run_` and exit non-zero if it fails. Copy the pattern from 25-firewall.
 
 ## Validation commands
 
@@ -111,26 +140,27 @@ Run before committing any change:
 ```bash
 bash -n main.sh state.sh modules/*.sh
 shellcheck -x main.sh state.sh modules/*.sh
+grep -rn 'PROFILE' main.sh state.sh modules/ README.md CLAUDE.md   # should be zero hits
 ```
 
-shellcheck must be clean. The `source`-path directives use `# shellcheck source=/dev/null` because modules source `lib.sh` via a computed variable path (`${MODULE_DIR}/../lib.sh`) that shellcheck can't statically resolve. This is deliberate; don't try to "fix" it with `source-path=SCRIPTDIR` — it breaks when shellcheck is invoked with a changed CWD.
+The `source`-path directives use `# shellcheck source=/dev/null` because modules source `lib.sh` via a computed variable path (`${MODULE_DIR}/../lib.sh`) that shellcheck can't statically resolve. Intentional — don't try to "fix" it with `source-path=SCRIPTDIR`; it breaks when shellcheck is invoked with a changed CWD.
 
 ## Git
 
 - **Only commit when asked.** If unclear, ask.
-- **Conventional commits.** `feat:` / `fix:` / `chore:` / `refactor:` / `docs:` prefixes. Body in the imperative, one blank line after the subject.
+- **Conventional commits.** `feat:` / `fix:` / `chore:` / `refactor:` / `docs:` prefixes. Imperative mood, one blank line after the subject.
 - **Never `--amend` after a pre-commit hook fails.** The commit didn't happen; fix the issue, re-stage, make a new commit.
 - **Never force-push main.** Warn the user if they ask.
-- **Don't stage unrelated files.** Check `git status` before `git add -A`. In this repo, `.DS_Store` is gitignored; don't include `DONE.MD` or similar working-notes files unless explicitly asked.
+- **Don't stage unrelated files.** Check `git status` before `git add -A`.
 
 ## Verification discipline
 
-Report outcomes faithfully. If `shellcheck` fails, say so with the output — do not suppress warnings to manufacture a green run. If you didn't run the target VM and therefore can't confirm runtime behavior, say that — don't imply it "worked" based on static checks alone. Static checks validate *code correctness*, not *feature correctness*.
+Report outcomes faithfully. If shellcheck fails, say so with the output — do not suppress warnings to manufacture a green run. If you didn't run a target VM and can't confirm runtime behavior, say that — don't imply it "worked" based on static checks alone. Static checks validate code correctness, not feature correctness.
 
 ## File & function size
 
-- Files: aim for under 500 LOC. Split anything over 800.
-- Functions: aim for under 100 LOC. Refactor before modifying anything over 200.
+- Files: aim under 500 LOC. Split anything over 800.
+- Functions: aim under 100 LOC. Refactor before modifying anything over 200.
 - Optimize for cohesion (one responsibility per file) and readability over compactness.
 
 ## Large-file reads
@@ -139,4 +169,4 @@ When reading files over 500 lines, use `offset` and `limit` with the `Read` tool
 
 ## Search completeness
 
-When renaming a function / variable / type, search for: direct calls, string literals containing the name, re-exports, barrel files, test mocks. Single grep is insufficient.
+When renaming a function / variable / type, search for: direct calls, string literals, re-exports, barrel files, test mocks. A single grep is insufficient.

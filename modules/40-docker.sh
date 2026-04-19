@@ -3,9 +3,10 @@
 # 40-docker.sh — Install Docker CE + compose plugin from the official repo
 # =============================================================================
 #
-# Uses docker.com's signed-by keyring + apt source. Only runs on PROFILE=docker.
-# The resulting daemon enables iptables NAT for bridge networking — 26-sysctl.sh
-# already sets net.ipv4.ip_forward=1 for the docker profile so this works.
+# Asks whether to install Docker; on 'yes' sets STEP_docker_SELECTED=yes and
+# installs via docker.com's signed-by keyring. Subsequent 41-docker-firewall
+# gates on the selection flag and applies the DOCKER-USER chain rules plus
+# ip_forward=1 needed for bridge networking.
 # =============================================================================
 
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,15 +15,19 @@ source "${MODULE_DIR}/../lib.sh"
 # shellcheck source=/dev/null
 source "${MODULE_DIR}/../state.sh"
 
-applies_docker() { [[ "$(state_get PROFILE)" == docker ]]; }
+applies_docker() { return 0; }
 
 detect_docker() { return 0; }
 
 configure_docker() {
-    # Let the operator add their non-root user to the docker group.
-    local user default
+    if ! ask_yesno "Install Docker CE?" "n"; then
+        state_mark_skipped docker
+        return 0
+    fi
+    state_set STEP_docker_SELECTED yes
+
+    local user default="n"
     user="$(state_get USER_NAME)"
-    default="n"
     [[ -n "$user" ]] && default="y"
     if [[ -n "$user" ]] && ask_yesno "Add '$user' to the 'docker' group?" "$default"; then
         state_set DOCKER_ADD_USER yes
@@ -33,6 +38,12 @@ configure_docker() {
 
 check_docker() {
     command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker
+}
+
+verify_docker() {
+    command -v docker >/dev/null 2>&1 \
+        && systemctl is-active --quiet docker \
+        && docker info >/dev/null 2>&1
 }
 
 run_docker() {
@@ -67,8 +78,9 @@ EOF
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     require_root
     state_init
-    applies_docker || { info "Not a docker profile; skipping."; exit 0; }
     configure_docker
+    state_skipped docker && exit 0
     check_docker && { log "Docker already installed; skipping."; exit 0; }
     run_docker
+    verify_docker || { err "Docker verification failed"; exit 1; }
 fi

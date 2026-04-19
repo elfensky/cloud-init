@@ -11,7 +11,7 @@ source "${MODULE_DIR}/../state.sh"
 
 KUBE_PROM_STACK_VERSION="${KUBE_PROM_STACK_VERSION:-69.3.0}"
 
-applies_monitoring() { [[ "$(state_get PROFILE)" == k8s ]]; }
+applies_monitoring() { [[ "$(state_get STEP_rke2_service_COMPLETED)" == "yes" ]]; }
 
 detect_monitoring() { return 0; }
 

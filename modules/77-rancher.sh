@@ -11,7 +11,7 @@ source "${MODULE_DIR}/../state.sh"
 
 RANCHER_VERSION="${RANCHER_VERSION:-2.10.3}"
 
-applies_rancher() { [[ "$(state_get PROFILE)" == k8s ]]; }
+applies_rancher() { [[ "$(state_get STEP_rke2_service_COMPLETED)" == "yes" ]]; }
 
 detect_rancher() { return 0; }
 

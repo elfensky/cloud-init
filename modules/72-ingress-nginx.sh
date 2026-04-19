@@ -24,7 +24,7 @@ INGRESS_NGINX_VERSION="${INGRESS_NGINX_VERSION:-4.12.1}"
 CROWDSEC_CONTROLLER_TAG="${CROWDSEC_CONTROLLER_TAG:-v1.13.2}"
 CROWDSEC_CONTROLLER_DIGEST="${CROWDSEC_CONTROLLER_DIGEST:-sha256:4575be24781cad35f8e58437db6a3f492df2a3167fed2b6759a6ff0dc3488d56}"
 
-applies_ingress_nginx() { [[ "$(state_get PROFILE)" == k8s ]]; }
+applies_ingress_nginx() { [[ "$(state_get STEP_rke2_service_COMPLETED)" == "yes" ]]; }
 
 detect_ingress_nginx() { return 0; }
 

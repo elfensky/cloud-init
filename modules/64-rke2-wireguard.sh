@@ -18,7 +18,7 @@ source "${MODULE_DIR}/../lib.sh"
 source "${MODULE_DIR}/../state.sh"
 
 applies_rke2_wireguard() {
-    [[ "$(state_get PROFILE)" == k8s ]] \
+    [[ "$(state_get STEP_rke2_SELECTED)" == "yes" ]] \
         && [[ "$(state_get RKE2_ROLE)" == "bootstrap" ]] \
         && [[ "$(state_get RKE2_WIREGUARD)" == "yes" ]]
 }

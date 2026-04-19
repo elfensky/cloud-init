@@ -1,16 +1,20 @@
 # shellcheck shell=bash
 # =============================================================================
-# 41-docker-firewall.sh — DOCKER-USER chain rules (network-aware)
+# 41-docker-firewall.sh — DOCKER-USER chain rules + ip_forward + bridge-nf
 # =============================================================================
 #
 # Docker inserts its own rules into FORWARD (via DOCKER-USER chain) that run
-# BEFORE UFW's rules, which means bound container ports bypass UFW's deny
-# policy. The fix is to explicitly place rules in the DOCKER-USER chain:
+# BEFORE UFW's rules, so bound container ports bypass UFW's deny policy. Fix
+# by explicitly placing rules in DOCKER-USER:
 #   - Allow from NET_PRIVATE_CIDR (intra-server is trusted)
-#   - Drop everything else by default
-#   - Specific public ingress is then enabled per-container manually
+#   - Allow RELATED,ESTABLISHED (return traffic)
+#   - Default drop for everything else
 #
-# Rules are made persistent via iptables-persistent.
+# Also enables the kernel tunables Docker bridge networking needs:
+#   - net.ipv4.ip_forward = 1
+#   - net.bridge.bridge-nf-call-iptables = 1
+#
+# Rules persist via iptables-persistent; sysctl via /etc/sysctl.d/99-docker.conf.
 # =============================================================================
 
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,24 +23,39 @@ source "${MODULE_DIR}/../lib.sh"
 # shellcheck source=/dev/null
 source "${MODULE_DIR}/../state.sh"
 
-applies_docker_firewall() { [[ "$(state_get PROFILE)" == docker ]]; }
+applies_docker_firewall() { [[ "$(state_get STEP_docker_SELECTED)" == "yes" ]]; }
 
-detect_docker_firewall()   { return 0; }
-configure_docker_firewall(){ return 0; }
+detect_docker_firewall()    { return 0; }
+configure_docker_firewall() { return 0; }
 
 check_docker_firewall() {
     iptables -L DOCKER-USER -n 2>/dev/null | grep -q "cloud-init:docker-firewall"
 }
 
+verify_docker_firewall() {
+    check_docker_firewall \
+        && [[ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)" == "1" ]]
+}
+
 run_docker_firewall() {
-    # iptables-persistent preseeds: save current rules now so the installer
-    # doesn't prompt.
-    echo "iptables-persistent iptables-persistent/autosave_v4 boolean true"  | debconf-set-selections
-    echo "iptables-persistent iptables-persistent/autosave_v6 boolean true"  | debconf-set-selections
+    # Docker bridge networking needs ip_forward and bridge-nf-call. Both are
+    # set here so 26-sysctl can stay runtime-agnostic.
+    modprobe br_netfilter 2>/dev/null || true
+    cat > /etc/sysctl.d/99-docker.conf <<'EOF'
+net.ipv4.ip_forward = 1
+net.bridge.bridge-nf-call-iptables  = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+EOF
+    sysctl --system >/dev/null 2>&1 || true
+
+    # iptables-persistent preseeds to avoid the installer prompt.
+    echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" | debconf-set-selections
+    echo "iptables-persistent iptables-persistent/autosave_v6 boolean true" | debconf-set-selections
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iptables-persistent
 
     # Flush our previously-tagged rules if re-running.
     while iptables -D DOCKER-USER -m comment --comment "cloud-init:docker-firewall" -j RETURN 2>/dev/null; do :; done
+    while iptables -D DOCKER-USER -m comment --comment "cloud-init:docker-firewall" -j DROP 2>/dev/null; do :; done
 
     local priv_cidr
     priv_cidr="$(state_get NET_PRIVATE_CIDR)"
@@ -46,13 +65,10 @@ run_docker_firewall() {
     fi
     iptables -I DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED \
         -m comment --comment "cloud-init:docker-firewall" -j RETURN
-
-    # Default drop for anything not explicitly allowed (operator adds per-port
-    # rules above this one for public ingress).
     iptables -A DOCKER-USER -m comment --comment "cloud-init:docker-firewall" -j DROP
 
     netfilter-persistent save >/dev/null 2>&1 || iptables-save > /etc/iptables/rules.v4
-    log "Docker firewall (DOCKER-USER chain) configured; private allow: ${priv_cidr:-none}"
+    log "Docker firewall configured; ip_forward=1; private allow: ${priv_cidr:-none}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
@@ -61,4 +77,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     applies_docker_firewall || exit 0
     check_docker_firewall && { log "Already configured; skipping."; exit 0; }
     run_docker_firewall
+    verify_docker_firewall || { err "Docker firewall verification failed"; exit 1; }
 fi

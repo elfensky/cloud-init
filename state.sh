@@ -1,25 +1,40 @@
 # shellcheck shell=bash
 # =============================================================================
-# state.sh — Ephemeral state helpers for main.sh orchestration
+# state.sh — Wizard state helpers for main.sh
 # =============================================================================
 #
 # State lives at /run/cloud-init-scripts/state.env (tmpfs, mode 0600). It is
-# populated by the configure-pass of main.sh and consumed by the run-pass.
-# A trap in main.sh deletes the file on exit (success or failure); /run is
-# tmpfs so it also vanishes on reboot.
+# populated incrementally as the wizard walks each step and holds EVERYTHING
+# needed for the run: operator answers, generated secrets, step completion
+# flags.
 #
-# Canonical source of truth is always the real config files the modules write
-# (sshd_config.d, ufw rules, /etc/crowdsec/*, /etc/rancher/rke2/*, etc.).
-# Sub-scripts invoked standalone do NOT rely on this file; they call their
-# own detect_<name> function to reconstruct state from the real files.
+# Lifecycle
+# ---------
+#   - Created by state_init (first step of main.sh).
+#   - Written by state_set as each step progresses.
+#   - Preserved across Ctrl+C / lost connection / interrupted shells
+#     (no trap-on-EXIT cleanup). Next main.sh invocation resumes at the
+#     first incomplete step.
+#   - Removed ONLY by state_finalize_and_wipe, called by the terminal
+#     99-finalize.sh step after a clean run.
 #
-# Usage:
+# Canonical source of truth
+# -------------------------
+# The real config files the modules write (sshd_config.d, ufw rules,
+# /etc/crowdsec/*, /etc/rancher/rke2/*, kubectl secrets, ~/.ssh/) are the
+# long-term truth. state.env is the orchestration scratchpad — it vanishes
+# when the run finishes. Sub-scripts invoked standalone do not rely on this
+# file; they call detect_<name> to reconstruct from the real files.
+#
+# Usage
+# -----
 #   source "$(dirname "$0")/state.sh"
 #   state_init
-#   state_set FIREWALL_MODE standalone
-#   mode="$(state_get FIREWALL_MODE default)"
-#   state_load_answers /root/answers.env   # optional pre-seed
-#   trap state_cleanup EXIT                # set this in main.sh
+#   state_set FIREWALL_KIND ufw
+#   mode="$(state_get FIREWALL_KIND default)"
+#   if state_completed firewall; then ...
+#   state_mark_completed firewall
+#   state_finalize_and_wipe          # called by 99-finalize.sh only
 # =============================================================================
 
 [[ -n "${_STATE_SH_LOADED:-}" ]] && return 0
@@ -45,7 +60,6 @@ state_load_answers() {
     [[ -r "$file" ]] || { err "state_load_answers: cannot read $file"; return 1; }
     # shellcheck source=/dev/null
     source "$file"
-    # Persist sourced values into state.env so later module runs see them.
     local key
     while IFS= read -r key; do
         [[ -z "$key" ]] && continue
@@ -53,8 +67,7 @@ state_load_answers() {
     done < <(grep -E '^[A-Z_][A-Z0-9_]*=' "$file" | sed 's/=.*//')
 }
 
-# Echo the value of KEY if set (non-empty), otherwise DEFAULT. Reads the live
-# shell variable; state_set keeps file + shell in sync.
+# Echo the value of KEY if set (non-empty), otherwise DEFAULT.
 state_get() {
     local key="$1" default="${2:-}"
     if [[ -n "${!key:-}" ]]; then
@@ -64,22 +77,17 @@ state_get() {
     fi
 }
 
-# Set KEY=VALUE in the current shell and write-through to state.env so a crash
-# leaves a recoverable snapshot. Uses atomic rewrite (tmp + mv) to avoid
-# partial reads by concurrent processes.
+# Set KEY=VALUE in the current shell and write-through to state.env atomically.
+# printf %q emits a shell-safe form that bash can re-read; handles quotes,
+# whitespace, and backslashes without hand-escaping.
 state_set() {
     local key="$1" value="$2"
     [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || { err "state_set: invalid key '$key'"; return 1; }
 
-    # Update live shell. printf -v writes into the named variable; the
-    # subsequent export makes it visible to sourced module scripts.
     printf -v "$key" '%s' "$value"
     # shellcheck disable=SC2163  # $key holds the variable name, not its value.
     export "$key"
 
-    # Update state.env atomically: read existing (minus this key), append new.
-    # printf %q emits a form that bash can re-read safely, handling all
-    # metacharacters (quotes, whitespace, backslashes) without hand-escaping.
     [[ -f "$STATE_FILE" ]] || : > "$STATE_FILE"
     local tmp
     tmp="$(mktemp "${STATE_FILE}.XXXXXX")"
@@ -109,9 +117,59 @@ state_load() {
     source "$STATE_FILE"
 }
 
-# Trap handler — called on main.sh exit. Removes the state file and directory.
-# Idempotent; safe if state_init was never called.
-state_cleanup() {
-    rm -f "$STATE_FILE" 2>/dev/null || true
+# -----------------------------------------------------------------------------
+# Step completion helpers
+# -----------------------------------------------------------------------------
+# Step names are the module stem without the NN- prefix, snake_cased.
+# Example: module file "25-firewall.sh" → step name "firewall"; the completion
+# flag is stored as STEP_firewall_COMPLETED="yes".
+
+# Return 0 if step <name> is marked completed.
+state_completed() {
+    local name="$1"
+    [[ "$(state_get "STEP_${name}_COMPLETED")" == "yes" ]]
+}
+
+# Return 0 if step <name> is marked skipped.
+state_skipped() {
+    local name="$1"
+    [[ "$(state_get "STEP_${name}_SKIPPED")" == "yes" ]]
+}
+
+# Mark step <name> completed with an ISO8601 timestamp. Clears any prior SKIP.
+state_mark_completed() {
+    local name="$1"
+    state_set "STEP_${name}_COMPLETED" "yes"
+    state_set "STEP_${name}_COMPLETED_AT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    state_unset "STEP_${name}_SKIPPED" 2>/dev/null || true
+}
+
+# Mark step <name> skipped (operator answered 'n' to the top-level prompt).
+state_mark_skipped() {
+    local name="$1"
+    state_set "STEP_${name}_SKIPPED" "yes"
+    state_set "STEP_${name}_SKIPPED_AT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+
+# Clear completion and skip flags for step <name>. Used by main.sh --redo.
+state_clear_step() {
+    local name="$1"
+    state_unset "STEP_${name}_COMPLETED" 2>/dev/null || true
+    state_unset "STEP_${name}_COMPLETED_AT" 2>/dev/null || true
+    state_unset "STEP_${name}_SKIPPED" 2>/dev/null || true
+    state_unset "STEP_${name}_SKIPPED_AT" 2>/dev/null || true
+}
+
+# Delete the state file and directory, then verify removal. Returns 0 if
+# cleanup succeeded, non-zero with a loud warning otherwise. Called by the
+# terminal 99-finalize.sh step.
+state_finalize_and_wipe() {
+    rm -f "$STATE_FILE"
     rmdir "$STATE_DIR" 2>/dev/null || true
+    if [[ -e "$STATE_FILE" || -e "$STATE_DIR" ]]; then
+        err "FAILED to remove $STATE_FILE or $STATE_DIR"
+        err "Secrets may remain on tmpfs. Manually: rm -rf $STATE_DIR"
+        return 1
+    fi
+    return 0
 }

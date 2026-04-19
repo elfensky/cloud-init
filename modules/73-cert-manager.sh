@@ -12,7 +12,7 @@ source "${MODULE_DIR}/../state.sh"
 
 CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-v1.17.1}"
 
-applies_cert_manager() { [[ "$(state_get PROFILE)" == k8s ]]; }
+applies_cert_manager() { [[ "$(state_get STEP_rke2_service_COMPLETED)" == "yes" ]]; }
 
 detect_cert_manager() { return 0; }
 

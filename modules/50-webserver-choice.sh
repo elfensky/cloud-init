@@ -3,11 +3,12 @@
 # 50-webserver-choice.sh — Host-level reverse-proxy selector
 # =============================================================================
 #
-# Only applies to docker / bare profiles. k8s profile uses ingress-nginx
-# inside the cluster (72-ingress-nginx.sh), NOT a host-level web server.
+# Offered on every host. Operator picks one of nginx / apache / openresty,
+# or "none" to skip. The chosen installer (51/52/53) runs on the next step;
+# the other two have their applies_ return false based on WEBSERVER_KIND.
 #
-# WEBSERVER_KIND ∈ {nginx, apache, openresty, none}
-#   default: "nginx" on docker, "none" on bare.
+# Note: a K8s node CAN still install a host-level reverse proxy (for
+# non-cluster services). That's why this isn't gated on RKE2 selection.
 # =============================================================================
 
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,11 +17,7 @@ source "${MODULE_DIR}/../lib.sh"
 # shellcheck source=/dev/null
 source "${MODULE_DIR}/../state.sh"
 
-applies_webserver_choice() {
-    local p
-    p="$(state_get PROFILE)"
-    [[ "$p" == "docker" || "$p" == "bare" ]]
-}
+applies_webserver_choice() { return 0; }
 
 detect_webserver_choice() {
     if systemctl is-active --quiet nginx 2>/dev/null; then
@@ -33,55 +30,56 @@ detect_webserver_choice() {
 }
 
 configure_webserver_choice() {
-    local default idx
+    if ! ask_yesno "Install a host-level reverse-proxy web server?" "n"; then
+        state_set WEBSERVER_KIND none
+        state_mark_skipped webserver_choice
+        return 0
+    fi
+
+    local default
     case "$(state_get WEBSERVER_KIND)" in
         nginx)     default=1 ;;
         apache)    default=2 ;;
         openresty) default=3 ;;
-        none)      default=4 ;;
-        *)
-            # First run: pick a sensible per-profile default.
-            [[ "$(state_get PROFILE)" == "docker" ]] && default=1 || default=4
-            ;;
+        *)         default=1 ;;
     esac
-    ask_choice "Host-level web server (reverse proxy)" "$default" \
+    ask_choice "Reverse-proxy web server" "$default" \
         "nginx|Standard nginx (Ubuntu package)" \
         "apache|Apache httpd with mod_ssl + mod_proxy" \
-        "openresty|OpenResty (nginx + Lua); can host the CrowdSec bouncer" \
-        "none|Skip; configure manually later"
+        "openresty|nginx + Lua; hosts the CrowdSec bouncer natively"
     case "$REPLY" in
-        1) idx=nginx ;;
-        2) idx=apache ;;
-        3) idx=openresty ;;
-        4) idx=none ;;
+        1) state_set WEBSERVER_KIND nginx ;;
+        2) state_set WEBSERVER_KIND apache ;;
+        3) state_set WEBSERVER_KIND openresty ;;
     esac
-    state_set WEBSERVER_KIND "$idx"
 
-    if [[ "$idx" != "none" ]]; then
-        if [[ -n "$(state_get WEBSERVER_DOMAIN)" ]]; then
-            ask_input "Server name (FQDN for default vhost / LE cert)" \
-                "$(state_get WEBSERVER_DOMAIN)"
-        else
-            ask_input "Server name (FQDN for default vhost / LE cert, blank to skip LE)" ""
-        fi
-        state_set WEBSERVER_DOMAIN "$REPLY"
+    ask_input "Server name (FQDN for default vhost / LE cert; blank to skip LE)" \
+        "$(state_get WEBSERVER_DOMAIN)"
+    state_set WEBSERVER_DOMAIN "$REPLY"
 
-        if [[ -n "$(state_get WEBSERVER_DOMAIN)" ]]; then
-            ask_input "Email address for Let's Encrypt notifications" \
-                "$(state_get WEBSERVER_EMAIL)"
-            state_set WEBSERVER_EMAIL "$REPLY"
-        fi
+    if [[ -n "$(state_get WEBSERVER_DOMAIN)" ]]; then
+        ask_input "Email address for Let's Encrypt notifications" \
+            "$(state_get WEBSERVER_EMAIL)"
+        state_set WEBSERVER_EMAIL "$REPLY"
     fi
 }
 
-check_webserver_choice() { return 1; }  # downstream modules decide
-run_webserver_choice()   { log "Web server: $(state_get WEBSERVER_KIND)"; }
+check_webserver_choice() { return 1; }  # no canonical state; downstream modules verify
+
+verify_webserver_choice() {
+    # Verifying "the user picked something" is just ensuring WEBSERVER_KIND is set.
+    [[ -n "$(state_get WEBSERVER_KIND)" ]]
+}
+
+run_webserver_choice() {
+    log "Web server: $(state_get WEBSERVER_KIND)"
+}
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     require_root
     state_init
-    applies_webserver_choice || { info "Not applicable to this profile; skipping."; exit 0; }
     detect_webserver_choice
     configure_webserver_choice
+    state_skipped webserver_choice && exit 0
     run_webserver_choice
 fi

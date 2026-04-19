@@ -1,20 +1,19 @@
 # shellcheck shell=bash
 # =============================================================================
-# 25-firewall.sh — UFW, profile- AND network-aware
+# 25-firewall.sh — UFW with multi-network rules
 # =============================================================================
 #
 # Public network (NET_PUBLIC_IFACE, always present):
-#   SSH on the configured SSH_PORT, all profiles.
-#   HTTP/HTTPS for docker and bare profiles (and also for k8s if the operator
-#   opts in — rare, since ingress normally lives inside the cluster).
+#   SSH on the configured SSH_PORT. HTTP/HTTPS only when the operator opts in
+#   (or when a web server / reverse proxy was selected earlier in the run).
 #
 # Private network (NET_PRIVATE_IFACE, if NET_HAS_PRIVATE=yes):
-#   Allow-all on the private interface regardless of profile. Intra-server
-#   traffic (etcd, kubelet, exporters, DB replication) changes as components
-#   come and go — maintaining a port allow-list on a trusted private net is
-#   fragile and provides no real security benefit over deny-from-public.
+#   Allow-all on the private interface. Intra-server traffic (etcd, kubelet,
+#   exporters, DB replication) changes as components come and go — a port
+#   allow-list on a trusted private net is fragile and adds no real security
+#   over deny-from-public.
 #
-# When NET_HAS_PRIVATE=no, private-net rules collapse away entirely.
+# When NET_HAS_PRIVATE=no, the private-net rule collapses away.
 # =============================================================================
 
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,28 +25,38 @@ source "${MODULE_DIR}/../state.sh"
 applies_firewall() { return 0; }
 
 detect_firewall() {
-    # No explicit state to recover; UFW rules themselves are the source of truth.
+    # UFW status is the canonical source of truth; no state to import.
     return 0
 }
 
 configure_firewall() {
-    # Whether to open 80/443 on the public interface. Defaults per profile.
-    local profile default
-    profile="$(state_get PROFILE)"
-    case "$profile" in
-        docker|bare) default="y" ;;
-        k8s|*)       default="n" ;;
-    esac
-    if ask_yesno "Open HTTP/HTTPS (80/443) on the public interface?" "$default"; then
+    if ! ask_yesno "Configure UFW host firewall?" "y"; then
+        state_mark_skipped firewall
+        return 0
+    fi
+
+    # Default HTTP open to YES if the operator has already selected Docker or
+    # a host-level web server earlier in the wizard; otherwise NO. The user
+    # can override in either direction.
+    local http_default="n"
+    [[ "$(state_get STEP_docker_SELECTED)" == "yes" ]] && http_default="y"
+    [[ -n "$(state_get WEBSERVER_KIND)" && "$(state_get WEBSERVER_KIND)" != "none" ]] && http_default="y"
+
+    if ask_yesno "Open HTTP/HTTPS (80/443) on the public interface?" "$http_default"; then
         state_set FIREWALL_OPEN_HTTP yes
     else
         state_set FIREWALL_OPEN_HTTP no
     fi
 }
 
-check_firewall() {
-    # Always re-run: UFW reset is cheap and idempotent.
-    return 1
+check_firewall()  { return 1; }  # UFW reset is cheap; always re-run.
+
+verify_firewall() {
+    # Active UFW + SSH rule present.
+    ufw status 2>/dev/null | grep -q "Status: active" || return 1
+    local port
+    port="$(state_get SSH_PORT 22)"
+    ufw status 2>/dev/null | grep -qE "^${port}/tcp |^.* ALLOW .*${port}" || return 1
 }
 
 run_firewall() {
@@ -70,7 +79,6 @@ run_firewall() {
             ufw allow in on "$pub_if" to any port 443 proto tcp comment 'HTTPS (public)'
         fi
     else
-        # Fallback: no detected public iface → open on any iface.
         ufw allow "${ssh_port}/tcp" comment 'SSH'
         if [[ "$open_http" == yes ]]; then
             ufw allow 80/tcp  comment 'HTTP'
@@ -83,7 +91,7 @@ run_firewall() {
     fi
 
     ufw --force enable
-    log "UFW enabled — public=$pub_if ($(state_get FIREWALL_OPEN_HTTP | tr 'yn' 'ey')), private=${priv_if:-none}"
+    log "UFW enabled — public=${pub_if:-any} http=${open_http} private=${priv_if:-none}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
@@ -91,5 +99,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     state_init
     detect_firewall
     configure_firewall
+    state_skipped firewall && exit 0
     run_firewall
+    verify_firewall || { err "Firewall verification failed"; exit 1; }
 fi

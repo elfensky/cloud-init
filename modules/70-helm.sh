@@ -11,7 +11,7 @@ source "${MODULE_DIR}/../state.sh"
 
 HELM_VERSION="${HELM_VERSION:-v3.17.1}"
 
-applies_helm() { [[ "$(state_get PROFILE)" == k8s ]]; }
+applies_helm() { [[ "$(state_get STEP_rke2_service_COMPLETED)" == "yes" ]]; }
 
 detect_helm()   { return 0; }
 configure_helm(){ return 0; }

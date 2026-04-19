@@ -29,7 +29,7 @@ source "${MODULE_DIR}/../state.sh"
 
 CROWDSEC_VERSION="${CROWDSEC_VERSION:-0.22.0}"
 
-applies_crowdsec_k8s() { [[ "$(state_get PROFILE)" == k8s ]]; }
+applies_crowdsec_k8s() { [[ "$(state_get STEP_rke2_service_COMPLETED)" == "yes" ]]; }
 
 detect_crowdsec_k8s() { return 0; }
 

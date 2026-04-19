@@ -12,7 +12,7 @@ source "${MODULE_DIR}/../state.sh"
 LOCAL_PATH_VERSION="${LOCAL_PATH_VERSION:-v0.0.30}"
 LOCAL_PATH_SHA256="${LOCAL_PATH_SHA256:-fe682186b00400fe7e2b72bae16f63e47a56a6dcc677938c6642139ef670045e}"
 
-applies_local_path() { [[ "$(state_get PROFILE)" == k8s ]]; }
+applies_local_path() { [[ "$(state_get STEP_rke2_service_COMPLETED)" == "yes" ]]; }
 
 detect_local_path()  { return 0; }
 

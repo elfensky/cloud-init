@@ -12,7 +12,7 @@ source "${MODULE_DIR}/../state.sh"
 LOKI_VERSION="${LOKI_VERSION:-6.25.0}"
 PROMTAIL_VERSION="${PROMTAIL_VERSION:-6.16.6}"
 
-applies_logging() { [[ "$(state_get PROFILE)" == k8s ]]; }
+applies_logging() { [[ "$(state_get STEP_rke2_service_COMPLETED)" == "yes" ]]; }
 
 detect_logging() { return 0; }
 

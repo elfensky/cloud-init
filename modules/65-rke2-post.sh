@@ -9,7 +9,7 @@ source "${MODULE_DIR}/../lib.sh"
 # shellcheck source=/dev/null
 source "${MODULE_DIR}/../state.sh"
 
-applies_rke2_post() { [[ "$(state_get PROFILE)" == k8s ]]; }
+applies_rke2_post() { [[ "$(state_get STEP_rke2_SELECTED)" == "yes" ]]; }
 
 detect_rke2_post()   { return 0; }
 configure_rke2_post(){ return 0; }

@@ -104,6 +104,12 @@ configure_networks() {
 
 check_networks() { return 1; }  # Always re-runnable; emits a summary.
 
+verify_networks() {
+    # Detection succeeded if we have at least a public interface. A private
+    # network is optional and is reflected in NET_HAS_PRIVATE.
+    [[ -n "$(state_get NET_PUBLIC_IFACE)" ]]
+}
+
 run_networks() {
     local has_priv
     has_priv="$(state_get NET_HAS_PRIVATE)"
