@@ -34,6 +34,6 @@ jobs:
       - name: shellcheck -x (static analysis)
         # -x follows `source` directives so main.sh + lib.sh + state.sh (and
         # each module's `source ../lib.sh`) get analyzed as a unit.
-        # -S warning starts at a pragmatic severity; tighten to `style` later
-        # if the noise floor stays clean.
-        run: shellcheck -x -S warning main.sh lib.sh state.sh modules/*.sh
+        # -S style is the strictest default severity — the repo is clean at
+        # this level today, so keep it here to catch regressions early.
+        run: shellcheck -x -S style main.sh lib.sh state.sh modules/*.sh
