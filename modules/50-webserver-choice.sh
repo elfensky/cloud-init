@@ -82,4 +82,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     configure_webserver_choice
     state_skipped webserver_choice && exit 0
     run_webserver_choice
+    verify_webserver_choice || { err "Webserver choice not recorded"; exit 1; }
 fi

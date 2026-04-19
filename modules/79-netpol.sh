@@ -71,4 +71,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
     check_netpol && { log "Already applied; skipping."; exit 0; }
     run_netpol
+    check_netpol || { err "NetworkPolicy verification failed"; exit 1; }
 fi

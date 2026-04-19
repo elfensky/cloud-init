@@ -141,4 +141,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     configure_ingress_nginx
     check_ingress_nginx && { log "Already installed; skipping."; exit 0; }
     run_ingress_nginx
+    check_ingress_nginx || { err "ingress-nginx verification failed"; exit 1; }
 fi

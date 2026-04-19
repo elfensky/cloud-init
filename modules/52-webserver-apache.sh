@@ -72,4 +72,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     applies_webserver_apache || exit 0
     check_webserver_apache && { log "Already installed; skipping."; exit 0; }
     run_webserver_apache
+    check_webserver_apache || { err "apache verification failed"; exit 1; }
 fi

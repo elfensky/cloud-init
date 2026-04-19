@@ -13,8 +13,9 @@
 #   NET_PRIVATE_CIDR     — private CIDR used for allow-lists, or empty
 #   NET_HAS_PRIVATE      — "yes" or "no"
 #
-# When NET_HAS_PRIVATE=no, all downstream modules collapse private-net rules
-# to single-network behaviour (matches today's "standalone" defaults).
+# When NET_HAS_PRIVATE=no, all downstream modules that have multi-network
+# decisions (firewall, intrusion, docker-firewall, RKE2, ingress) collapse
+# their private-net branches away and behave as single-network hosts.
 # =============================================================================
 
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

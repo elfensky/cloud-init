@@ -1,6 +1,16 @@
 # shellcheck shell=bash
 # =============================================================================
-# 65-rke2-post.sh — kubectl profile script + Calico WireGuard convenience
+# 65-rke2-post.sh — /etc/profile.d/rke2.sh + Calico WireGuard helper script
+# =============================================================================
+#
+# Drops a shell profile snippet so any user's interactive login sees kubectl
+# on PATH and KUBECONFIG pointed at the RKE2 kubeconfig. Skipped on workers
+# (no kubeconfig locally).
+#
+# For Calico + WireGuard, installs /usr/local/bin/rke2-enable-wireguard as a
+# convenience wrapper around the cluster-wide kubectl patch. The operator
+# must run it AFTER all nodes have joined — applying before then breaks
+# pods on nodes that haven't loaded the WireGuard kernel module.
 # =============================================================================
 
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,4 +73,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     state_init
     applies_rke2_post || exit 0
     run_rke2_post
+    check_rke2_post || { err "RKE2 post-install verification failed"; exit 1; }
 fi

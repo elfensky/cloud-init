@@ -8,8 +8,8 @@
 # rolling back the drop-in file so the previous (working) config stands.
 #
 # Pauses after reload so the operator can verify access from a second
-# terminal; on "no", rolls back and exits. This is load-bearing safety and
-# is preserved verbatim from init.1.vps.sh.
+# terminal; on "no", rolls back and exits. Load-bearing: removing this
+# pause turns any sshd_config typo into a permanent lockout on a remote box.
 # =============================================================================
 
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

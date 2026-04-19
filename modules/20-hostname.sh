@@ -45,5 +45,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     state_init
     detect_hostname
     configure_hostname
-    check_hostname || run_hostname
+    check_hostname && { log "Hostname already set; nothing to do."; exit 0; }
+    run_hostname
+    check_hostname || { err "Hostname verification failed"; exit 1; }
 fi

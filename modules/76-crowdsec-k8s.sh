@@ -3,22 +3,17 @@
 # 76-crowdsec-k8s.sh — CrowdSec LAPI + Agent + AppSec in-cluster
 # =============================================================================
 #
-# Runs BEFORE 72-ingress-nginx so the decision engine is up when the bouncer
-# starts — enforced by glob ordering (76 runs before 72? No — 72 < 76). To
-# preserve the original ordering (crowdsec BEFORE ingress), this module is
-# installed via `applies_crowdsec_k8s` returning true and main.sh orders by
-# number; the original script ran CrowdSec third, ingress fourth. In the new
-# layout we renumbered so platform ordering matches: crowdsec must be 72's
-# FRIEND — so we put it at 71.5? Simpler: ingress-nginx (72) waits for the
-# crowdsec service to be ready (if enabled) before the Lua bouncer init
-# container pulls the config. If CrowdSec isn't selected, no dependency.
+# Deploys the CrowdSec chart into the cluster. The agent tails the
+# ingress-nginx controller pods for HTTP-layer signals; LAPI stores
+# decisions; AppSec provides virtual-patching WAF rules.
 #
-# In practice: operator who selects both runs --phase platform; 72 waits for
-# 76 by polling the crowdsec Service. To keep the original semantic, we have
-# 72-ingress-nginx skip its Lua-bouncer overlay if PLATFORM_CROWDSEC isn't
-# yes at configure time — 76 runs first in the deploy order when selected.
-# Since 76 > 72 here, reorder: make this module apply AFTER ingress, which
-# actually works: the bouncer polls LAPI endpoints and retries until ready.
+# Ordering note: 76 runs AFTER 72-ingress-nginx (numeric file order). That's
+# fine because the ingress-nginx Lua bouncer init container retries its
+# connection to the CrowdSec Service until LAPI is reachable — an extra few
+# minutes of startup latency rather than a hard failure. If the operator
+# enables both crowdsec AND ingress-nginx in the same run, 72 injects the
+# bouncer config referencing the (still-future) crowdsec.svc endpoint, then
+# 76 brings that endpoint up and the bouncer connects.
 # =============================================================================
 
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -139,4 +134,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     configure_crowdsec_k8s
     check_crowdsec_k8s && { log "Already installed; skipping."; exit 0; }
     run_crowdsec_k8s
+    check_crowdsec_k8s || { err "CrowdSec (k8s) verification failed"; exit 1; }
 fi

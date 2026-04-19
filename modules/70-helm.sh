@@ -36,4 +36,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     applies_helm || exit 0
     check_helm && { log "Already installed; skipping."; exit 0; }
     run_helm
+    check_helm || { err "Helm verification failed"; exit 1; }
 fi

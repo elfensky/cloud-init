@@ -136,4 +136,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     configure_user
     check_user && { log "User state matches desired; skipping."; exit 0; }
     run_user
+    check_user || { err "User verification failed"; exit 1; }
 fi

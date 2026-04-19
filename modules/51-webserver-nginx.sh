@@ -71,4 +71,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     applies_webserver_nginx || exit 0
     check_webserver_nginx && { log "Already installed; skipping."; exit 0; }
     run_webserver_nginx
+    check_webserver_nginx || { err "nginx verification failed"; exit 1; }
 fi

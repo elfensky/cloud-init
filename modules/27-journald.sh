@@ -33,5 +33,7 @@ EOF
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     require_root
     state_init
-    check_journald || run_journald
+    check_journald && { log "Journald cap already in place; skipping."; exit 0; }
+    run_journald
+    check_journald || { err "Journald verification failed"; exit 1; }
 fi

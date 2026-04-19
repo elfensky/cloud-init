@@ -45,4 +45,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     configure_ubuntu_pro
     check_ubuntu_pro && { log "Already attached; skipping."; exit 0; }
     run_ubuntu_pro
+    check_ubuntu_pro || { err "Ubuntu Pro verification failed"; exit 1; }
 fi

@@ -111,4 +111,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     configure_cert_manager
     check_cert_manager && { log "Already installed; skipping."; exit 0; }
     run_cert_manager
+    check_cert_manager || { err "cert-manager verification failed"; exit 1; }
 fi

@@ -85,4 +85,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     applies_rke2_wireguard || exit 0
     check_rke2_wireguard && { log "Already written; skipping."; exit 0; }
     run_rke2_wireguard
+    check_rke2_wireguard || { err "WireGuard manifest verification failed"; exit 1; }
 fi

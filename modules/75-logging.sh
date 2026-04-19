@@ -116,4 +116,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     configure_logging
     check_logging && { log "Already installed; skipping."; exit 0; }
     run_logging
+    check_logging || { err "logging verification failed"; exit 1; }
 fi

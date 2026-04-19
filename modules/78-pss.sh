@@ -51,4 +51,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     export PATH="$PATH:/var/lib/rancher/rke2/bin"
     export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
     run_pss
+    verify_pss || { err "PSS verification failed"; exit 1; }
 fi

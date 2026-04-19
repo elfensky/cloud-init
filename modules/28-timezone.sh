@@ -26,5 +26,7 @@ run_timezone() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     require_root
     state_init
-    check_timezone || run_timezone
+    check_timezone && { log "Timezone + NTP already set; skipping."; exit 0; }
+    run_timezone
+    check_timezone || { err "Timezone verification failed"; exit 1; }
 fi

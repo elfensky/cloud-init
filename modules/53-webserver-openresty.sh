@@ -123,4 +123,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     applies_webserver_openresty || exit 0
     check_webserver_openresty && { log "Already installed; skipping."; exit 0; }
     run_webserver_openresty
+    check_webserver_openresty || { err "openresty verification failed"; exit 1; }
 fi

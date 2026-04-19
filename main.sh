@@ -4,16 +4,19 @@
 # =============================================================================
 #
 # Walks modules/NN-*.sh in filename-sort order. For each module:
-#   1. If STEP_<name>_COMPLETED=yes and --redo didn't list it → print
+#   1. applies_<name> gate — re-evaluated every iteration, so it can consult
+#      state that EARLIER modules set (e.g. STEP_rke2_SELECTED gates 61-65).
+#   2. If STEP_<name>_COMPLETED=yes and --redo didn't list it → print
 #      "✓ [done at <ts>]" and continue.
-#   2. detect_<name> — populate state from the canonical config files.
-#   3. Ask "Configure <module>?" (default from previous answer or 'y').
-#      - 'n' → mark skipped, move on.
-#   4. configure_<name> — ask the module's sub-questions.
-#   5. run_<name> — execute immediately.
-#   6. verify_<name> (or check_<name> as verifier) — read canonical state to
-#      confirm the action landed. If it fails, HALT the wizard.
-#   7. Mark step completed with timestamp, move to next.
+#   3. detect_<name> — populate state from canonical config files.
+#   4. configure_<name> — module asks its own top-level y/n (+ sub-questions).
+#      If the operator declines, configure_ calls state_mark_skipped <name>
+#      and returns; main.sh sees the flag and moves on.
+#   5. run_<name> — execute immediately. Per-step safety pauses live here.
+#   6. verify_<name> (or check_<name> as fallback) — read canonical state
+#      to confirm the action landed. If it fails, HALT the wizard (exit 1);
+#      state is preserved so the next invocation resumes at this step.
+#   7. Mark step completed with an ISO timestamp, move to next.
 #
 # State lives at /run/cloud-init-scripts/state.env for the full run. It
 # survives Ctrl+C / lost connections / failed steps, so re-running resumes

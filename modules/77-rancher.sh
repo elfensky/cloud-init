@@ -103,4 +103,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     configure_rancher
     check_rancher && { log "Already installed; skipping."; exit 0; }
     run_rancher
+    check_rancher || { err "Rancher verification failed"; exit 1; }
 fi

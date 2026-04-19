@@ -39,4 +39,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     configure_tailscale
     check_tailscale && { log "Already installed; skipping."; exit 0; }
     run_tailscale
+    check_tailscale || { err "Tailscale verification failed"; exit 1; }
 fi

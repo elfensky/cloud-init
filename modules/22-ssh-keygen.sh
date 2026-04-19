@@ -176,4 +176,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     configure_ssh_keygen
     check_ssh_keygen && { log "Keys already in desired state; skipping."; exit 0; }
     run_ssh_keygen
+    check_ssh_keygen || { err "ssh-keygen verification failed"; exit 1; }
 fi

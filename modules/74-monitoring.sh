@@ -182,4 +182,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     configure_monitoring
     check_monitoring && { log "Already installed; skipping."; exit 0; }
     run_monitoring
+    check_monitoring || { err "monitoring verification failed"; exit 1; }
 fi

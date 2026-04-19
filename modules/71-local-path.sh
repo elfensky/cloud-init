@@ -56,4 +56,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     configure_local_path
     check_local_path && { log "Already installed; skipping."; exit 0; }
     run_local_path
+    check_local_path || { err "local-path verification failed"; exit 1; }
 fi
