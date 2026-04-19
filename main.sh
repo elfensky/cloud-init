@@ -27,6 +27,8 @@
 #   sudo ./main.sh                       # walk the full wizard
 #   sudo ./main.sh --only 25-firewall    # run exactly one step
 #   sudo ./main.sh --redo 24-ssh-harden  # clear completion flag and rerun
+#   sudo ./main.sh --redo "7*"           # re-run all modules matching a glob
+#   sudo ./main.sh --reset               # wipe state.env; re-ask every question
 #   sudo ./main.sh --answers FILE        # pre-seed state from KEY=VALUE file
 #   sudo ./main.sh --non-interactive     # no prompts; require seeded answers
 #   sudo ./main.sh --dry-run             # list remaining steps; no changes
@@ -52,9 +54,10 @@ REDO=""
 ANSWERS_FILE=""
 NON_INTERACTIVE=0
 DRY_RUN=0
+RESET=0
 
 usage() {
-    sed -n '3,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '3,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -64,6 +67,7 @@ while [[ $# -gt 0 ]]; do
         --answers)         ANSWERS_FILE="$2"; shift 2 ;;
         --non-interactive) NON_INTERACTIVE=1; shift ;;
         --dry-run)         DRY_RUN=1; shift ;;
+        --reset)           RESET=1; shift ;;
         -h|--help)         usage; exit 0 ;;
         *) err "Unknown argument: $1"; usage; exit 2 ;;
     esac
@@ -94,6 +98,26 @@ ensure_tmux ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
 
 banner "Cloud VPS Setup — main.sh" "Ubuntu ${UBUNTU_VERSION}"
 
+# --reset wipes state.env BEFORE state_init, so old answers are never loaded
+# into the shell. Config files on disk (sshd, UFW, helm releases, installed
+# packages) are NOT touched — only the wizard's orchestration state is cleared.
+if [[ $RESET -eq 1 ]]; then
+    if [[ -e "$STATE_FILE" ]]; then
+        warn "This wipes all wizard state (answers, completion flags, generated secrets)."
+        warn "Installed packages, helm releases, and config files on disk are NOT touched."
+        if [[ $NON_INTERACTIVE -eq 1 ]]; then
+            info "--non-interactive + --reset: proceeding without confirmation."
+        elif ! ask_yesno "Proceed with reset?" "n"; then
+            err "Aborted."
+            exit 1
+        fi
+        rm -rf "$STATE_DIR"
+        log "State reset; starting fresh."
+    else
+        info "--reset: no prior state to wipe."
+    fi
+fi
+
 # Initialize the state file. If one already exists (previous run Ctrl+C'd),
 # load its contents so the wizard resumes at the first incomplete step.
 state_init
@@ -105,14 +129,30 @@ if [[ -n "$ANSWERS_FILE" ]]; then
     state_load_answers "$ANSWERS_FILE"
 fi
 
-# Apply --redo by clearing completion flags on the listed steps. Accepts
-# comma-separated step names (module stems without the .sh).
+# Apply --redo by clearing completion flags on matched modules. Accepts
+# comma-separated module stems (e.g. "25-firewall") or glob patterns
+# (e.g. "7*" to re-run the whole 70-79 platform stack, "*-rke2-*" for
+# all RKE2-related modules). A pattern matching zero modules is an error
+# so typos fail loud instead of silently doing nothing.
 if [[ -n "$REDO" ]]; then
     IFS=',' read -ra REDO_LIST <<< "$REDO"
-    for step in "${REDO_LIST[@]}"; do
-        sfx="$(mod_func_suffix "$step")"
-        state_clear_step "$sfx"
-        info "Cleared completion flag for $step"
+    for pattern in "${REDO_LIST[@]}"; do
+        any_match=0
+        for f in "$MODULE_DIR"/??-*.sh; do
+            [[ -f "$f" ]] || continue
+            mod_stem="$(mod_name "$f")"
+            # shellcheck disable=SC2053  # intentional glob match on $pattern
+            if [[ "$mod_stem" == $pattern ]]; then
+                sfx="$(mod_func_suffix "$mod_stem")"
+                state_clear_step "$sfx"
+                info "Cleared completion flag for $mod_stem"
+                any_match=1
+            fi
+        done
+        if [[ $any_match -eq 0 ]]; then
+            err "--redo pattern '$pattern' matched no modules"
+            exit 2
+        fi
     done
 fi
 

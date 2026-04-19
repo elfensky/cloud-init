@@ -123,7 +123,11 @@ run_user() {
         home_dir="/home/$u"
         ssh_dir="$home_dir/.ssh"
         mkdir -p "$ssh_dir"
-        printf '%s\n' "$key" > "$ssh_dir/authorized_keys"
+        # Append-with-dedup so --redo user (or a --reset + rerun) doesn't
+        # clobber keys added by 66-ssh-peers, ssh-copy-id, or manual edits.
+        touch "$ssh_dir/authorized_keys"
+        grep -qxF "$key" "$ssh_dir/authorized_keys" \
+            || printf '%s\n' "$key" >> "$ssh_dir/authorized_keys"
         chmod 700 "$ssh_dir"
         chmod 600 "$ssh_dir/authorized_keys"
         chown -R "$u:$u" "$ssh_dir"
