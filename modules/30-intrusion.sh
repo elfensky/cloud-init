@@ -50,7 +50,7 @@ configure_intrusion() {
     if [[ "$(state_get SECURITY_TOOL)" == "crowdsec" ]]; then
         if [[ -z "$(state_get CROWDSEC_ENROLL_KEY)" ]] \
            && ask_yesno "Enroll CrowdSec in the console dashboard?" "n"; then
-            ask_input "CrowdSec enrollment key" ""
+            ask_input "CrowdSec enrollment key (from app.crowdsec.net console; blank to skip)" ""
             state_set CROWDSEC_ENROLL_KEY "$REPLY"
         fi
     fi

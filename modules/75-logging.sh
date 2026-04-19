@@ -22,9 +22,9 @@ configure_logging() {
         return 0
     fi
     state_set PLATFORM_LOGGING yes
-    ask_input "Loki retention (h)"  "$(state_get PLATFORM_LOKI_RETENTION 336h)"
+    ask_input "Loki retention (hours with \"h\" suffix, e.g. 336h for 14d)" "$(state_get PLATFORM_LOKI_RETENTION 336h)"
     state_set PLATFORM_LOKI_RETENTION "$REPLY"
-    ask_input "Loki storage size"   "$(state_get PLATFORM_LOKI_STORAGE 50Gi)"
+    ask_input "Loki storage size (Kubernetes quantity, e.g. 50Gi)" "$(state_get PLATFORM_LOKI_STORAGE 50Gi)"
     state_set PLATFORM_LOKI_STORAGE "$REPLY"
 }
 

@@ -20,7 +20,7 @@ configure_hostname() {
     local cur
     cur="$(state_get HOSTNAME_FQDN "$(hostname)")"
     while true; do
-        ask_input "Hostname" "$cur"
+        ask_input "Hostname (short name or FQDN)" "$cur"
         if validate_hostname "$REPLY"; then
             state_set HOSTNAME_FQDN "$REPLY"
             break

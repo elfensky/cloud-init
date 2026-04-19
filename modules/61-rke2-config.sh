@@ -53,7 +53,7 @@ configure_rke2_config() {
 
     # --- Node private IP ---
     while true; do
-        ask_input "Node private IP" "$(state_get RKE2_NODE_IP "$(state_get NET_PRIVATE_IP)")"
+        ask_input "Node private IP (this node's address on the private network)" "$(state_get RKE2_NODE_IP "$(state_get NET_PRIVATE_IP)")"
         if validate_ip "$REPLY"; then
             state_set RKE2_NODE_IP "$REPLY"
             break
@@ -113,12 +113,12 @@ configure_rke2_config() {
 
     if ask_yesno "Configure advanced options (CIDRs, etcd metrics, audit, channel)?" "n"; then
         while true; do
-            ask_input "Pod CIDR" "$(state_get RKE2_POD_CIDR)"
+            ask_input "Pod CIDR (RKE2 default shown; change only if it collides with your LAN)" "$(state_get RKE2_POD_CIDR)"
             validate_cidr "$REPLY" && { state_set RKE2_POD_CIDR "$REPLY"; break; }
             err "Invalid CIDR: $REPLY"
         done
         while true; do
-            ask_input "Service CIDR" "$(state_get RKE2_SVC_CIDR)"
+            ask_input "Service CIDR (RKE2 default shown; change only if it collides with your LAN)" "$(state_get RKE2_SVC_CIDR)"
             validate_cidr "$REPLY" && { state_set RKE2_SVC_CIDR "$REPLY"; break; }
             err "Invalid CIDR: $REPLY"
         done

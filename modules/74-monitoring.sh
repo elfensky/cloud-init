@@ -36,7 +36,7 @@ configure_monitoring() {
         state_set PLATFORM_GRAFANA_PASSWORD "$cur_pw"
     fi
 
-    ask_input "Grafana hostname" \
+    ask_input "Grafana hostname (FQDN reachable via your ingress)" \
         "$(state_get PLATFORM_GRAFANA_HOST "grafana.$(state_get PLATFORM_CERT_DOMAIN yourdomain.com)")"
     state_set PLATFORM_GRAFANA_HOST "$REPLY"
 
@@ -53,11 +53,11 @@ configure_monitoring() {
         fi
     fi
 
-    ask_input "Prometheus retention" "$(state_get PLATFORM_PROM_RETENTION 30d)"
+    ask_input "Prometheus retention (Prometheus duration, e.g. 30d, 720h)" "$(state_get PLATFORM_PROM_RETENTION 30d)"
     state_set PLATFORM_PROM_RETENTION "$REPLY"
-    ask_input "Prometheus storage"   "$(state_get PLATFORM_PROM_STORAGE 50Gi)"
+    ask_input "Prometheus storage (Kubernetes quantity, e.g. 50Gi)" "$(state_get PLATFORM_PROM_STORAGE 50Gi)"
     state_set PLATFORM_PROM_STORAGE "$REPLY"
-    ask_input "Alertmanager storage" "$(state_get PLATFORM_AM_STORAGE 5Gi)"
+    ask_input "Alertmanager storage (Kubernetes quantity, e.g. 5Gi)" "$(state_get PLATFORM_AM_STORAGE 5Gi)"
     state_set PLATFORM_AM_STORAGE "$REPLY"
 }
 

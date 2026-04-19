@@ -22,7 +22,7 @@ configure_rancher() {
     fi
     state_set PLATFORM_RANCHER yes
 
-    ask_input "Rancher hostname" \
+    ask_input "Rancher hostname (FQDN reachable via your ingress)" \
         "$(state_get PLATFORM_RANCHER_HOST "rancher.$(state_get PLATFORM_CERT_DOMAIN yourdomain.com)")"
     state_set PLATFORM_RANCHER_HOST "$REPLY"
 

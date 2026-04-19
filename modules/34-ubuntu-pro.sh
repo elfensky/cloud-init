@@ -14,7 +14,7 @@ detect_ubuntu_pro()  { return 0; }
 
 configure_ubuntu_pro() {
     if ask_yesno "Attach Ubuntu Pro?" "n"; then
-        ask_input "Ubuntu Pro token" "$(state_get UBUNTU_PRO_TOKEN)"
+        ask_input "Ubuntu Pro token (from ubuntu.com/pro/dashboard)" "$(state_get UBUNTU_PRO_TOKEN)"
         state_set UBUNTU_PRO_TOKEN "$REPLY"
         state_set UBUNTU_PRO_ENABLED yes
     else

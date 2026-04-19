@@ -132,6 +132,7 @@ For Calico + WireGuard, 64-rke2-wireguard does NOT write a pre-install HelmChart
 - **Shared helpers live in `lib.sh`.** Don't reinvent `ask_*`, `validate_*`, `detect_*`, `wait_for`, `require_root`, `ensure_tmux` in modules. Add to `lib.sh` if a pattern reappears.
 - **Inline rationale, not WHAT.** Module headers explain WHY a config choice exists (load-bearing reasons, incident history, upstream-bug references). Don't repeat what the next five lines of bash obviously do.
 - **Standalone-run scripts should also verify.** Each module's trailing `if [[ "${BASH_SOURCE[0]}" == "${0}" ]]` block should call `verify_<name>` (or `check_<name>`) after `run_` and exit non-zero if it fails. Copy the pattern from 25-firewall.
+- **Prompt labels explain the input format.** New `ask_input` calls should include a format/example hint in parentheses when the expected input isn't obvious from the label alone (good: `"Server URL (e.g. https://host:6443)"`, bad: bare `"Hostname"`). A bare label is acceptable only when the `[default]` value itself communicates the type. This is soft-enforced via review — no CI check yet.
 
 ## Validation commands
 

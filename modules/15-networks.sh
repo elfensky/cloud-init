@@ -117,7 +117,7 @@ configure_networks() {
     _show_interfaces
 
     # Confirm / override public interface + IP.
-    ask_input "Public interface" "$(state_get NET_PUBLIC_IFACE)"
+    ask_input "Public interface (WAN-facing NIC name)" "$(state_get NET_PUBLIC_IFACE)"
     state_set NET_PUBLIC_IFACE "$REPLY"
     ask_input "Public IPv4" "$(state_get NET_PUBLIC_IP)"
     state_set NET_PUBLIC_IP "$REPLY"
@@ -126,7 +126,7 @@ configure_networks() {
     local default_priv
     default_priv="$([[ "$(state_get NET_HAS_PRIVATE no)" == yes ]] && echo y || echo n)"
     if ask_yesno "Does this host have a private (intra-server) network?" "$default_priv"; then
-        ask_input "Private interface" "$(state_get NET_PRIVATE_IFACE)"
+        ask_input "Private interface (intra-server NIC name)" "$(state_get NET_PRIVATE_IFACE)"
         state_set NET_PRIVATE_IFACE "$REPLY"
         ask_input "Private IPv4" "$(state_get NET_PRIVATE_IP)"
         state_set NET_PRIVATE_IP "$REPLY"

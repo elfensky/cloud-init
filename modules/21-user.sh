@@ -49,7 +49,7 @@ configure_user() {
 
     if ask_yesno "Create a non-root sudo user?" "$default_create"; then
         while true; do
-            ask_input "Username" "$(state_get USER_NAME)" '^[a-z][a-z0-9_-]*$'
+            ask_input "Username (must start with lowercase letter; lowercase/digits/-/_)" "$(state_get USER_NAME)" '^[a-z][a-z0-9_-]*$'
             if validate_username "$REPLY"; then
                 state_set USER_NAME "$REPLY"
                 break
