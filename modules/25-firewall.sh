@@ -11,23 +11,24 @@
 #   Allow-all on the private interface. Intra-server traffic (etcd, kubelet,
 #   exporters, DB replication) changes as components come and go — a port
 #   allow-list on a trusted private net is fragile and adds no real security
-#   over deny-from-public. SSH_SCOPE=tailnet_only adds a targeted deny for the
+#   over deny-from-public. SSH_SCOPE=vpn_only adds a targeted deny for the
 #   SSH port on this interface, keeping the allow-all for everything else.
 #
-# Tailnet (tailscale0, if TAILSCALE_ENABLED=yes from 18-tailscale):
-#   Allow-all on the tailscale0 interface. Tailscale does its own identity +
-#   ACL enforcement at the WireGuard + tailscaled layer.
+# VPN interface (VPN_IFACE from 18-vpn, if VPN_ENABLED=yes):
+#   Allow-all on whichever interface the VPN brought up (tailscale0 or the
+#   operator-chosen wg* name). Tailscale enforces identity/ACL at its own
+#   layer; WireGuard is trusted by the cryptographic peer handshake.
 #
 # SSH_SCOPE controls WHERE on the host the SSH port (SSH_PORT) is reachable:
-#   - all          : public + private + tailnet (classical, default)
-#   - no_public    : block public; private + tailnet allowed
-#   - tailnet_only : block public AND private; tailnet only (⚠ console-recovery
-#                    dependency if Tailscale breaks; warned at configure time)
+#   - all        : public + private + VPN (classical, default)
+#   - no_public  : block public; private + VPN allowed
+#   - vpn_only   : block public AND private; VPN only (⚠ console-recovery
+#                  dependency if the VPN breaks — warned at configure time)
 #
 # SSH_SCOPE is set by _configure_ssh_scope based on what's available: with
-# neither Tailscale nor private LAN, the scope collapses to 'all' without
-# asking (no meaningful choice exists). When NET_HAS_PRIVATE=no the private
-# rule block is skipped entirely.
+# neither VPN nor private LAN, the scope collapses to 'all' without asking
+# (no meaningful choice exists). When NET_HAS_PRIVATE=no the private-rule
+# block is skipped entirely.
 # =============================================================================
 
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -66,43 +67,44 @@ configure_firewall() {
 }
 
 # Asks where SSH should be reachable from. Options depend on what earlier
-# steps enabled — tailnet (18-tailscale) and private network (15-networks).
-# The default is always "anywhere" so that a quick wizard run stays unchanged;
+# steps enabled — VPN (18-vpn) and private network (15-networks). Default
+# is always "anywhere" so a quick wizard run keeps classical behaviour;
 # opt-in restriction is a conscious choice by the operator.
 _configure_ssh_scope() {
-    local has_tailscale has_private ssh_port
-    has_tailscale="$(state_get TAILSCALE_ENABLED no)"
+    local has_vpn vpn_kind has_private ssh_port
+    has_vpn="$(state_get VPN_ENABLED no)"
+    vpn_kind="$(state_get VPN_KIND none)"
     has_private="$(state_get NET_HAS_PRIVATE no)"
     ssh_port="$(state_get SSH_PORT 22)"
 
-    # No tailnet and no private means there's only one answer: public-reachable.
-    if [[ "$has_tailscale" != yes && "$has_private" != yes ]]; then
+    # No VPN and no private LAN means there's only one answer: public-reachable.
+    if [[ "$has_vpn" != yes && "$has_private" != yes ]]; then
         state_set SSH_SCOPE all
         return 0
     fi
 
     # Build the "anywhere" option label dynamically.
     local anywhere_desc="public internet"
-    [[ "$has_private" == yes ]]   && anywhere_desc+=" + private LAN"
-    [[ "$has_tailscale" == yes ]] && anywhere_desc+=" + tailnet"
+    [[ "$has_private" == yes ]] && anywhere_desc+=" + private LAN"
+    [[ "$has_vpn"     == yes ]] && anywhere_desc+=" + VPN (${vpn_kind})"
 
     info "Decide where port ${ssh_port} is reachable from. UFW only — sshd itself"
     info "keeps listening on all interfaces; this just controls the packet filter."
-    if [[ "$has_tailscale" == yes ]]; then
-        info "⚠ 'Tailnet only' means: if Tailscale breaks (account lockout, tailscaled"
-        info "⚠ crash, coordination-server outage) you lose SSH from the public AND"
-        info "⚠ private paths. Recovery requires console/serial access from your host"
-        info "⚠ provider — Hetzner provides it, some providers do not. Verify yours."
+    if [[ "$has_vpn" == yes ]]; then
+        info "⚠ 'VPN only' means: if the VPN breaks (account lockout, coordination"
+        info "⚠ server outage, key mismatch, daemon crash) you lose SSH from the"
+        info "⚠ public AND private paths. Recovery requires console/serial access"
+        info "⚠ from your host provider — Hetzner provides it, some do not. Verify."
     fi
 
-    # Assemble the choice list. Index mapping is position-based so we need to
-    # track which option corresponds to which scope; do that with parallel arrays.
+    # Assemble the choice list. Index mapping is position-based so we track
+    # which option maps to which scope via parallel arrays.
     local -a labels=() descs=() scopes=()
 
-    labels+=("Anywhere");   descs+=("$anywhere_desc");                              scopes+=("all")
-    labels+=("No public");  descs+=("block public; allow everything else");         scopes+=("no_public")
-    if [[ "$has_tailscale" == yes ]]; then
-        labels+=("Tailnet only"); descs+=("block public AND private LAN; tailnet only"); scopes+=("tailnet_only")
+    labels+=("Anywhere");  descs+=("$anywhere_desc");                       scopes+=("all")
+    labels+=("No public"); descs+=("block public; allow everything else");  scopes+=("no_public")
+    if [[ "$has_vpn" == yes ]]; then
+        labels+=("VPN only"); descs+=("block public AND private LAN; VPN only"); scopes+=("vpn_only")
     fi
 
     local -a opts=()
@@ -120,16 +122,17 @@ check_firewall()  { return 1; }  # UFW reset is cheap; always re-run.
 verify_firewall() {
     ufw status 2>/dev/null | grep -q "Status: active" || return 1
     # Verification depends on scope: 'all' requires a port-specific allow; the
-    # restricted scopes rely on a tailscale0 or private-interface allow-all.
-    local port scope
+    # restricted scopes rely on a VPN-interface or private-interface allow-all.
+    local port scope vpn_iface
     port="$(state_get SSH_PORT 22)"
     scope="$(state_get SSH_SCOPE all)"
+    vpn_iface="$(state_get VPN_IFACE)"
     case "$scope" in
         all)
             ufw status 2>/dev/null | grep -qE "^${port}/tcp |^.* ALLOW .*${port}" || return 1
             ;;
         *)
-            ufw status 2>/dev/null | grep -qE "tailscale0|Private network" || return 1
+            ufw status 2>/dev/null | grep -qE "${vpn_iface:-@@nope@@}|Private network" || return 1
             ;;
     esac
 }
@@ -140,18 +143,20 @@ run_firewall() {
     ufw default deny incoming
     ufw default allow outgoing
 
-    local ssh_port pub_if priv_if has_priv has_tailscale open_http ssh_scope
+    local ssh_port pub_if priv_if has_priv has_vpn vpn_iface vpn_kind open_http ssh_scope
     ssh_port="$(state_get SSH_PORT 22)"
     pub_if="$(state_get NET_PUBLIC_IFACE)"
     priv_if="$(state_get NET_PRIVATE_IFACE)"
     has_priv="$(state_get NET_HAS_PRIVATE no)"
-    has_tailscale="$(state_get TAILSCALE_ENABLED no)"
+    has_vpn="$(state_get VPN_ENABLED no)"
+    vpn_iface="$(state_get VPN_IFACE)"
+    vpn_kind="$(state_get VPN_KIND none)"
     open_http="$(state_get FIREWALL_OPEN_HTTP no)"
     ssh_scope="$(state_get SSH_SCOPE all)"
 
     # --- Public interface rules -------------------------------------------------
     # HTTP/HTTPS are orthogonal to SSH_SCOPE — a public web server with
-    # tailnet-only SSH is a perfectly sensible setup.
+    # VPN-only SSH is a perfectly sensible setup.
     if [[ -n "$pub_if" ]]; then
         if [[ "$ssh_scope" == all ]]; then
             ufw allow in on "$pub_if" to any port "$ssh_port" proto tcp comment 'SSH (public)'
@@ -170,23 +175,23 @@ run_firewall() {
     fi
 
     # --- Private interface rules ------------------------------------------------
-    # In "tailnet_only" mode we deny SSH specifically on the private interface
-    # but keep the allow-all for everything else (DB replication, exporters, etc).
+    # In "vpn_only" mode we deny SSH specifically on the private interface but
+    # keep the allow-all for everything else (DB replication, exporters, etc).
     # UFW evaluates rules in insertion order, so the deny must come first.
     if [[ "$has_priv" == yes && -n "$priv_if" ]]; then
-        if [[ "$ssh_scope" == tailnet_only ]]; then
-            ufw deny in on "$priv_if" to any port "$ssh_port" proto tcp comment 'SSH blocked on private (tailnet-only)'
+        if [[ "$ssh_scope" == vpn_only ]]; then
+            ufw deny in on "$priv_if" to any port "$ssh_port" proto tcp comment 'SSH blocked on private (VPN-only)'
         fi
         ufw allow in on "$priv_if" comment 'Private network'
     fi
 
-    # --- Tailnet rules ----------------------------------------------------------
-    if [[ "$has_tailscale" == yes ]]; then
-        ufw allow in on tailscale0 comment 'Tailscale'
+    # --- VPN rules --------------------------------------------------------------
+    if [[ "$has_vpn" == yes && -n "$vpn_iface" ]]; then
+        ufw allow in on "$vpn_iface" comment "VPN (${vpn_kind})"
     fi
 
     ufw --force enable
-    log "UFW enabled — ssh_scope=${ssh_scope} public=${pub_if:-any} http=${open_http} private=${priv_if:-none} tailscale=${has_tailscale}"
+    log "UFW enabled — ssh_scope=${ssh_scope} public=${pub_if:-any} http=${open_http} private=${priv_if:-none} vpn=${vpn_kind}/${vpn_iface:-none}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

@@ -95,9 +95,20 @@ After writing `/etc/ssh/sshd_config.d/99-hardening.conf` and reloading sshd, the
 
 The run function: `ufw --force reset` → `default deny incoming` → **add SSH rule** → allow-all on private → `ufw --force enable`. Reordering to enable UFW before the SSH allow rule locks the operator out mid-script.
 
-### `25-firewall`: SSH scope `tailnet_only` is console-recovery-only
+### `25-firewall`: SSH scope `vpn_only` is console-recovery-only
 
-When `SSH_SCOPE=tailnet_only`, the wizard blocks SSH on the public interface AND inserts a targeted deny for the SSH port on the private interface (the private allow-all still covers non-SSH traffic). The only path in is `tailscale0`. If `tailscaled` crashes, the Tailscale account is locked out, or the coordination server is unreachable, recovery requires console/serial access from the hosting provider. The configure-time info lines warn about this and name providers that do/don't offer console (Hetzner: yes; verify others). Do not default this scope — it must be an explicit opt-in.
+When `SSH_SCOPE=vpn_only`, the wizard blocks SSH on the public interface AND inserts a targeted deny for the SSH port on the private interface (the private allow-all still covers non-SSH traffic). The only path in is `VPN_IFACE` (tailscale0 or wg*). If the VPN daemon crashes, the Tailscale account is locked out, the WireGuard peer config is wrong, or the coordination server is unreachable, recovery requires console/serial access from the hosting provider. The configure-time info lines warn about this and name providers that do/don't offer console (Hetzner: yes; verify others). Do not default this scope — it must be an explicit opt-in.
+
+### `18-vpn`: WireGuard one-way egress block
+
+When an operator picks WireGuard and answers `y` to the one-way prompt (default), the module injects `PostUp`/`PreDown` iptables rules into the `[Interface]` section of the pasted config:
+
+```
+PostUp  = iptables -A OUTPUT -o <iface> -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+PostUp  = iptables -A OUTPUT -o <iface> -j DROP
+```
+
+Semantics: peer-initiated connections to the server work (inbound creates a conntrack entry; responses match ESTABLISHED); server-initiated connections to the peer are dropped. Matches the "home router NAT" model — the UniFi case the feature was designed for. Side effects: DNS-over-tunnel stops working in this mode (if the pasted config sets `DNS = 192.168.1.1`, the VPS can't reach it). If an operator later installs a monitoring agent or similar that needs outbound tunnel access, they must re-run `--redo 18-vpn` and answer `n` to the one-way prompt, OR whitelist the specific destination via a narrower PostUp rule.
 
 ### `40-runtime` / `41-docker-firewall`: Docker bypasses UFW
 
@@ -122,7 +133,7 @@ For Calico + WireGuard, 64-rke2-wireguard does NOT write a pre-install HelmChart
 - **Execution order is filename-glob sort.** Don't rename existing modules; gaps in numbering (11–14, 16–17, 42–49, 54–58, 67–69, 80–98) are intentional reserve slots for insertions.
 - **`10` is free since the PROFILE module was deleted.** Available for a future always-first module if needed.
 - **`15-networks` runs before any network-aware module.** 25-firewall, 30-intrusion, 41-docker-firewall, 61-rke2-config, 72-ingress-nginx all consult `NET_PUBLIC_*` / `NET_PRIVATE_*`.
-- **`18-tailscale` runs before 24-ssh-harden and 25-firewall on purpose.** Installing the VPN early lets those modules offer tailnet-aware options conditional on `TAILSCALE_ENABLED=yes`: 24 may enable Tailscale SSH (identity+ACL auth via tailscaled, as an alternative to sshd for tailnet connections), and 25 exposes the SSH scope selector (anywhere / no_public / tailnet_only). Operators who decline Tailscale at 18 see neither sub-prompt. 25-firewall also writes the `allow in on tailscale0` rule itself so the `ufw --force reset` doesn't clobber it — tailnet trust is co-located with the rest of the UFW state.
+- **`18-vpn` runs before 24-ssh-harden and 25-firewall on purpose.** Installing a VPN early lets those modules offer VPN-aware options conditional on `VPN_ENABLED=yes` / `VPN_KIND`: 24 may enable Tailscale SSH (ONLY when `VPN_KIND=tailscale` — WireGuard has no equivalent since it's a protocol, not an identity system), and 25 exposes the SSH scope selector (anywhere / no_public / vpn_only). Operators who decline a VPN at 18 see neither sub-prompt. 25-firewall writes the `allow in on ${VPN_IFACE}` rule itself so the `ufw --force reset` doesn't clobber it — VPN trust is co-located with the rest of the UFW state. State schema: `VPN_KIND` ∈ {none, tailscale, wireguard}, `VPN_IFACE` ∈ {"", tailscale0, wg0 or operator-chosen}; `VPN_ENABLED` is a convenience flag. The old `TAILSCALE_ENABLED` key is auto-migrated at detect time for re-runs against existing state.
 - **`30-intrusion` asks its y/n AND picks fail2ban vs crowdsec in a single step.** Replaces the former three-file split (30-security-choice + 31-fail2ban + 32-crowdsec-host) — one module = one wizard step.
 - **`40-runtime` is where the "Install Kubernetes?" decision lives** (alongside Podman / Docker / none as mutually-exclusive siblings). Picking RKE2 sets `STEP_rke2_SELECTED=yes`; modules 60-65 and 70-79 all gate on that flag. `60-rke2-preflight` is the confirm+preflight step, not the decision point — its `applies_` returns false when RKE2 wasn't chosen, so an operator who picked Podman/Docker at 40 never sees any RKE2-related prompt. The audit-rule setup that used to live in 59-audit is now inlined into `run_rke2_config` (61) — kept with RKE2 because that's where it's meaningful.
 - **`62-rke2-install` writes `/etc/sysctl.d/99-rke2.conf`.** This is where `ip_forward=1`, bridge-nf-call, inotify limits, and the `rp_filter=0` CNI carve-out happen. 26-sysctl is runtime-agnostic and writes only the baseline; 41-docker-firewall handles the Docker equivalent.

@@ -49,10 +49,11 @@ configure_ssh_harden() {
         err "Invalid port: $REPLY"
     done
 
-    # Tailscale SSH sub-prompt: only if 18-tailscale was opted into. Default
-    # 'n' — sshd-everywhere is the simpler trust model. See module header for
-    # the "two SSH servers, one host" explanation.
-    if [[ "$(state_get TAILSCALE_ENABLED)" == yes ]]; then
+    # Tailscale SSH sub-prompt: only meaningful when VPN_KIND=tailscale.
+    # WireGuard has no equivalent — it's a protocol, not an SSH identity
+    # system. Default 'n' — sshd-everywhere is the simpler trust model.
+    # See module header for the "two SSH servers, one host" explanation.
+    if [[ "$(state_get VPN_KIND)" == tailscale ]]; then
         info "Tailscale SSH is a SEPARATE SSH server inside tailscaled that handles"
         info "tailnet connections with SSO + ACL auth (no SSH keys). sshd is unchanged"
         info "and still handles every other path. Say 'n' if you want sshd responsible"
@@ -137,8 +138,9 @@ EOF
 
     # Apply Tailscale SSH toggle last so sshd hardening is already in force
     # regardless of outcome. Idempotent: `tailscale set` is a no-op when the
-    # requested state already matches.
-    if [[ "$(state_get TAILSCALE_ENABLED)" == yes ]]; then
+    # requested state already matches. Only relevant when VPN_KIND=tailscale;
+    # for WireGuard or none, there's no tailscaled to toggle.
+    if [[ "$(state_get VPN_KIND)" == tailscale ]]; then
         if [[ "$(state_get TAILSCALE_SSH no)" == yes ]]; then
             tailscale set --ssh
             log "Tailscale SSH enabled (tailnet connections now handled by tailscaled)"

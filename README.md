@@ -72,10 +72,10 @@ These are the steps a non-Kubernetes operator sees. Answer `n` at step 60 and no
 | `20` | Hostname | `hostnamectl set-hostname` |
 | `21` | Non-root sudo user (+ SSH key) | Lockout guard: refuses to continue if you'd lose SSH access. |
 | `22` | Ed25519 outbound keypair | For outbound Git / peer-to-peer SSH. |
-| `18` | Tailscale | Optional mesh VPN (installed early so 24 and 25 can offer tailnet options). |
+| `18` | VPN (optional) | **Tailscale** (zero-config, account required) or **WireGuard** (paste peer config from UniFi / WG-Easy / self-hosted). WireGuard path offers a one-way sub-prompt (conntrack egress block in PostUp/PreDown) so the server can respond to inbound but can't initiate outbound over the tunnel. Installed early so 24 and 25 can offer VPN-aware options. |
 | `23` | Base packages | apt update + curl, jq, git, htop, vim, tmux, unzip, net-tools. |
-| `24` | SSH hardening | Drop-in config + secondary-terminal confirm before the daemon reloads. Sub-prompt (if 18 installed Tailscale): enable Tailscale SSH (identity+ACL auth, `n` default — sshd-everywhere is the simpler model). |
-| `25` | Host firewall (UFW) | Multi-network-aware with SSH scope selector: **Anywhere** (default), **No public** (block public SSH; private+tailnet allowed), **Tailnet only** (block public AND private SSH; tailnet only — ⚠ console-recovery dependency if Tailscale breaks). HTTP/HTTPS independent of scope. |
+| `24` | SSH hardening | Drop-in config + secondary-terminal confirm before the daemon reloads. Sub-prompt when `VPN_KIND=tailscale`: enable Tailscale SSH (identity+ACL auth, `n` default — sshd-everywhere is the simpler model). No equivalent for WireGuard. |
+| `25` | Host firewall (UFW) | Multi-network-aware with SSH scope selector: **Anywhere** (default), **No public** (block public SSH; private+VPN allowed), **VPN only** (block public AND private SSH; VPN only — ⚠ console-recovery dependency if the VPN breaks). HTTP/HTTPS independent of scope. |
 | `26` | Kernel hardening baseline | Security sysctls. `ip_forward` is set by 41 / 62 if the container runtime needs it. |
 | `27` | Journald cap | 1G / 100M / 7d |
 | `28` | Timezone + NTP | Defaults to UTC; accepts any IANA zone (`Europe/Brussels`, `America/Los_Angeles`...). |
