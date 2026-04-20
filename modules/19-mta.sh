@@ -102,7 +102,16 @@ check_mta() {
 verify_mta() { check_mta; }
 
 run_mta() {
-    apt-get install -y -qq msmtp msmtp-mta mailutils 2>/dev/null
+    # noninteractive + no stderr-muzzle: msmtp-mta retargets /usr/sbin/sendmail
+    # via update-alternatives and conflicts with any pre-installed MTA, which
+    # can trip debconf prompts. Silencing stderr hid real failures and made
+    # apt's hang look like the wizard crashing.
+    export DEBIAN_FRONTEND=noninteractive
+    if ! apt-get install -y -qq msmtp msmtp-mta mailutils; then
+        err "apt-get install msmtp/msmtp-mta/mailutils failed."
+        err "See /var/log/apt/term.log for the full output."
+        exit 1
+    fi
 
     local port tls_starttls
     port="$(state_get MTA_PORT)"
