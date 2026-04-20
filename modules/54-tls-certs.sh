@@ -64,14 +64,20 @@ detect_tls_certs() {
 configure_tls_certs() {
     local domain
     domain="$(state_get WEBSERVER_DOMAIN)"
-    info "ACME client + challenge selection for ${domain}."
-    info "HTTP-01 needs port 80 reachable; DNS-01 enables wildcards + private hosts."
+    info "Let's Encrypt cert for ${domain} via ACME — the protocol Let's Encrypt"
+    info "and others use to prove you own the domain and hand you a cert. Two"
+    info "pieces to decide: which ACME client to run, and which 'challenge' type"
+    info "(how the CA verifies domain ownership) fits your setup."
     if ! ask_yesno "Set up a Let's Encrypt TLS certificate?" "y"; then
         state_mark_skipped tls_certs
         return 0
     fi
 
     # --- ACME client ---
+    info "ACME client = the program that talks to Let's Encrypt, obtains the cert,"
+    info "and auto-renews it every ~60 days. certbot and acme.sh are equivalent"
+    info "for most setups; pick certbot unless you specifically need acme.sh's"
+    info "broader DNS-provider plugin coverage."
     local tool_default=1
     [[ "$(state_get TLS_TOOL)" == "acme.sh" ]] && tool_default=2
     ask_choice "ACME client" "$tool_default" \
@@ -83,6 +89,13 @@ configure_tls_certs() {
     esac
 
     # --- Challenge type ---
+    info "Challenge = how Let's Encrypt verifies you own ${domain} before issuing:"
+    info "  HTTP-01: CA hits http://${domain}/.well-known/acme-challenge/<token>."
+    info "           Needs the domain already resolving here and port 80 reachable."
+    info "           No wildcards. Zero config — pick this unless you can't."
+    info "  DNS-01:  You (or your ACME client via a provider API) create a TXT"
+    info "           record under _acme-challenge.${domain}. Works without port 80"
+    info "           and is the ONLY way to get wildcard (*.${domain}) certs."
     local chal_default=1
     [[ "$(state_get TLS_CHALLENGE)" == "dns-01" ]] && chal_default=2
     ask_choice "ACME challenge" "$chal_default" \
@@ -96,7 +109,11 @@ configure_tls_certs() {
     # --- DNS provider + credentials (DNS-01 only) ---
     if [[ "$(state_get TLS_CHALLENGE)" == "dns-01" ]]; then
         _configure_dns_provider
-        if ask_yesno "Also issue a wildcard for *.$(state_get WEBSERVER_DOMAIN)?" "n"; then
+        info "A wildcard cert (*.${domain}) covers any one-level subdomain:"
+        info "api.${domain}, app.${domain}, foo.${domain} all terminate on the"
+        info "same cert. Useful when you host many subdomains; skip if you only"
+        info "have one or two — per-subdomain certs are fine and equally secure."
+        if ask_yesno "Also issue a wildcard cert for *.${domain}?" "n"; then
             state_set TLS_WILDCARD yes
         else
             state_set TLS_WILDCARD no
@@ -132,12 +149,19 @@ _configure_dns_provider() {
             state_set TLS_DNS_CF_TOKEN "$REPLY"
             ;;
         route53)
+            info "Create an IAM user in the AWS console with an inline policy granting"
+            info "route53:GetChange + route53:ChangeResourceRecordSets on your hosted"
+            info "zone (https://console.aws.amazon.com/iam → Users → Add user → Attach"
+            info "policy). The access-key pair is shown once at creation time."
             ask_input "AWS access key ID" "$(state_get TLS_DNS_AWS_KEY)"
             state_set TLS_DNS_AWS_KEY "$REPLY"
             ask_password "AWS secret access key" 1
             state_set TLS_DNS_AWS_SECRET "$REPLY"
             ;;
         digitalocean)
+            info "Generate a Personal Access Token with the 'dns' write scope at"
+            info "https://cloud.digitalocean.com/account/api/tokens — the token is"
+            info "shown once, so copy it into the next prompt immediately."
             ask_password "DigitalOcean API token (DNS write scope)" 1
             state_set TLS_DNS_DO_TOKEN "$REPLY"
             ;;

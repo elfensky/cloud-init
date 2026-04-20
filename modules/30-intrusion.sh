@@ -50,10 +50,16 @@ configure_intrusion() {
 
     # CrowdSec: ask about console enrollment.
     if [[ "$(state_get SECURITY_TOOL)" == "crowdsec" ]]; then
-        if [[ -z "$(state_get CROWDSEC_ENROLL_KEY)" ]] \
-           && ask_yesno "Enroll CrowdSec in the console dashboard?" "n"; then
-            ask_input "CrowdSec enrollment key (from app.crowdsec.net console; blank to skip)" ""
-            state_set CROWDSEC_ENROLL_KEY "$REPLY"
+        if [[ -z "$(state_get CROWDSEC_ENROLL_KEY)" ]]; then
+            info "CrowdSec's web console (app.crowdsec.net) is free for community use"
+            info "and gives you a dashboard showing blocked IPs, attack patterns, and"
+            info "alerts across all your enrolled machines. In exchange, your local"
+            info "agent sends decisions + sensor metrics to CrowdSec Inc. Decline for"
+            info "pure local operation — detection and blocking still work offline."
+            if ask_yesno "Enroll CrowdSec in the web console dashboard?" "n"; then
+                ask_input "CrowdSec enrollment key (from app.crowdsec.net console; blank to skip)" ""
+                state_set CROWDSEC_ENROLL_KEY "$REPLY"
+            fi
         fi
     fi
 }

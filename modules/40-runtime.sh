@@ -92,8 +92,16 @@ _configure_docker() {
     local user default="n"
     user="$(state_get USER_NAME)"
     [[ -n "$user" ]] && default="y"
-    if [[ -n "$user" ]] && ask_yesno "Add '$user' to the 'docker' group?" "$default"; then
-        state_set DOCKER_ADD_USER yes
+    if [[ -n "$user" ]]; then
+        info "Docker-group membership lets '$user' run 'docker' without sudo — but"
+        info "it's effectively root on this host: any member can run"
+        info "  docker run -v /:/host ...  and read/write ANY file as root."
+        info "Decline if you'd rather keep using 'sudo docker' for a clean audit trail."
+        if ask_yesno "Add '$user' to the 'docker' group?" "$default"; then
+            state_set DOCKER_ADD_USER yes
+        else
+            state_set DOCKER_ADD_USER no
+        fi
     else
         state_set DOCKER_ADD_USER no
     fi
