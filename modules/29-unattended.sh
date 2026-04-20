@@ -3,11 +3,13 @@
 # 29-unattended.sh — unattended-upgrades for automatic security patching
 # =============================================================================
 #
-# Operator chooses whether to enable at all, and whether to auto-reboot at
-# 04:00 UTC when a security update requires it. Auto-reboot default is "y"
-# (uncoordinated reboots are fine for single-node VPS / Docker hosts); K8s
-# operators should answer "n" when the wizard asks, because uncoordinated
-# 04:00 reboots on a cluster node bypass kured's coordination.
+# Operator chooses whether to enable at all, whether to auto-reboot when a
+# security update requires it, and at what wall-clock time. Auto-reboot
+# default is "y" (uncoordinated reboots are fine for single-node VPS / Docker
+# hosts); K8s operators should answer "n" when the wizard asks, because
+# uncoordinated reboots on a cluster node bypass kured's coordination.
+# The reboot time defaults to 04:00 (UTC, quiet for EU); operators serving
+# other timezones should pick a low-traffic window for their audience.
 # =============================================================================
 
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,7 +19,18 @@ source "${MODULE_DIR}/../lib.sh"
 source "${MODULE_DIR}/../state.sh"
 
 applies_unattended() { return 0; }
-detect_unattended()  { return 0; }
+
+detect_unattended() {
+    # Read the existing reboot time so a repeat run prepopulates the prompt
+    # with whatever the operator chose previously. Falls through to the
+    # 04:00 default in configure_ if the file doesn't exist or has no value.
+    local cfg=/etc/apt/apt.conf.d/50unattended-upgrades
+    [[ -f "$cfg" ]] || return 0
+    local existing
+    existing=$(grep -oP 'Automatic-Reboot-Time\s+"\K[0-9]{2}:[0-9]{2}' "$cfg" 2>/dev/null | head -1)
+    [[ -n "$existing" ]] && state_set UNATTENDED_REBOOT_TIME "$existing"
+    return 0
+}
 
 configure_unattended() {
     info "Daily apt security patching via unattended-upgrades."
@@ -39,9 +52,19 @@ configure_unattended() {
     # RKE2 selection that hasn't been made yet. Operators on K8s nodes must
     # answer "n" — documented in the prompt so it's hard to miss.
     info "Note: K8s (RKE2) nodes should answer 'n' below — use kured for"
-    info "coordinated cluster reboots instead of 04:00 UTC kernel restarts."
-    if ask_yesno "Auto-reboot at 04:00 when a kernel update requires it?" "y"; then
+    info "coordinated cluster reboots instead of unattended kernel restarts."
+    if ask_yesno "Auto-reboot when a kernel update requires it?" "y"; then
         state_set UNATTENDED_AUTO_REBOOT yes
+        # Wall-clock time is in 24h system-local TZ (UTC on most cloud images).
+        # Pick a window that's quiet for *your* audience: 04:00 covers EU,
+        # ~11:00 UTC is overnight in US East, ~18:00 UTC is overnight in Asia.
+        # Backups must finish before this — a reboot mid-pg_dump truncates it.
+        info "Reboot time uses the host's local timezone (UTC on most cloud images)."
+        info "Pick a low-traffic window; ensure scheduled backups finish before it."
+        ask_input "Reboot time (HH:MM, 24h)" \
+            "$(state_get UNATTENDED_REBOOT_TIME 04:00)" \
+            '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+        state_set UNATTENDED_REBOOT_TIME "$REPLY"
     else
         state_set UNATTENDED_AUTO_REBOOT no
     fi
@@ -66,8 +89,10 @@ EOF
 
     local reboot_block
     if [[ "$(state_get UNATTENDED_AUTO_REBOOT no)" == "yes" ]]; then
-        reboot_block='Unattended-Upgrade::Automatic-Reboot "true";
-Unattended-Upgrade::Automatic-Reboot-Time "04:00";'
+        local reboot_time
+        reboot_time="$(state_get UNATTENDED_REBOOT_TIME 04:00)"
+        reboot_block="Unattended-Upgrade::Automatic-Reboot \"true\";
+Unattended-Upgrade::Automatic-Reboot-Time \"${reboot_time}\";"
     else
         reboot_block='// Auto-reboot disabled (use kured or manual reboots on K8s nodes)
 Unattended-Upgrade::Automatic-Reboot "false";'
@@ -97,9 +122,15 @@ ${mail_block}
 Unattended-Upgrade::SyslogEnable "true";
 EOF
 
+    # Build a human-readable reboot status that includes the time when set,
+    # so the OK line answers "did it apply, and when will it fire?" at once.
+    local reboot_status
+    reboot_status="$(state_get UNATTENDED_AUTO_REBOOT)"
+    [[ "$reboot_status" == "yes" ]] && reboot_status="yes @ $(state_get UNATTENDED_REBOOT_TIME)"
+
     systemctl enable --now unattended-upgrades
     if [[ -n "$mail_addr" ]]; then
-        log "Unattended upgrades enabled (auto-reboot=$(state_get UNATTENDED_AUTO_REBOOT); mail→${mail_addr})"
+        log "Unattended upgrades enabled (auto-reboot=${reboot_status}; mail→${mail_addr})"
         # Warn if an email was set but no sendmail is present — otherwise the
         # reports vanish into /dev/null without a hint. 19-mta is the normal
         # way to fix this; a pre-existing postfix/exim4 is also fine.
@@ -108,13 +139,14 @@ EOF
             warn "Re-run 19-mta (sudo ./main.sh --redo mta) to set up msmtp."
         fi
     else
-        log "Unattended upgrades enabled (auto-reboot=$(state_get UNATTENDED_AUTO_REBOOT); no mail)"
+        log "Unattended upgrades enabled (auto-reboot=${reboot_status}; no mail)"
     fi
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     require_root
     state_init
+    detect_unattended
     configure_unattended
     state_skipped unattended && exit 0
     run_unattended
