@@ -92,7 +92,13 @@ run_rke2_service() {
             ;;
     esac
 
-    [[ "$role" != "worker" ]] && kubectl get nodes -o wide 2>/dev/null || true
+    # Print the node table on server joins for at-a-glance topology confirmation;
+    # workers don't have kubectl. Refactored from `[[ ]] && ... || true` to dodge
+    # SC2015 — the && / || precedence isn't an if/then/else, even though here
+    # the trailing `true` makes the trap benign.
+    if [[ "$role" != "worker" ]]; then
+        kubectl get nodes -o wide 2>/dev/null || true
+    fi
 }
 
 verify_rke2_service() {
