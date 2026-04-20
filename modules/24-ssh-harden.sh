@@ -48,6 +48,23 @@ configure_ssh_harden() {
         fi
         err "Invalid port: $REPLY"
     done
+
+    # Tailscale SSH sub-prompt: only if 18-tailscale was opted into. Default
+    # 'n' — sshd-everywhere is the simpler trust model. See module header for
+    # the "two SSH servers, one host" explanation.
+    if [[ "$(state_get TAILSCALE_ENABLED)" == yes ]]; then
+        info "Tailscale SSH is a SEPARATE SSH server inside tailscaled that handles"
+        info "tailnet connections with SSO + ACL auth (no SSH keys). sshd is unchanged"
+        info "and still handles every other path. Say 'n' if you want sshd responsible"
+        info "for all SSH on this host (simpler mental model, keys required everywhere)."
+        if ask_yesno "Enable Tailscale SSH for tailnet connections?" "n"; then
+            state_set TAILSCALE_SSH yes
+        else
+            state_set TAILSCALE_SSH no
+        fi
+    else
+        state_set TAILSCALE_SSH no
+    fi
 }
 
 check_ssh_harden() {
@@ -115,6 +132,19 @@ EOF
             systemctl reload "$SSH_SERVICE"
             err "SSH hardening rolled back. Re-run after verifying access."
             exit 1
+        fi
+    fi
+
+    # Apply Tailscale SSH toggle last so sshd hardening is already in force
+    # regardless of outcome. Idempotent: `tailscale set` is a no-op when the
+    # requested state already matches.
+    if [[ "$(state_get TAILSCALE_ENABLED)" == yes ]]; then
+        if [[ "$(state_get TAILSCALE_SSH no)" == yes ]]; then
+            tailscale set --ssh
+            log "Tailscale SSH enabled (tailnet connections now handled by tailscaled)"
+        else
+            tailscale set --ssh=false
+            log "Tailscale SSH disabled — sshd handles all SSH paths"
         fi
     fi
 }
