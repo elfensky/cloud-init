@@ -59,11 +59,19 @@ configure_webserver_choice() {
         3) state_set WEBSERVER_KIND apache ;;
     esac
 
-    ask_input "Server name (FQDN for default vhost / LE cert; blank to skip LE)" \
+    info "The domain name this host will serve web traffic on. Used twice:"
+    info "  - as server_name in the default virtual host (browsers hitting this"
+    info "    IP with Host: <domain> reach the web server's default site)"
+    info "  - as the common name on a Let's Encrypt TLS cert at step 54"
+    info "Leave blank for HTTP-only setup (no TLS, step 54 skipped). Re-run"
+    info "  --redo 50-webserver-choice later once DNS points to this host."
+    ask_input "Domain name (e.g. apps.example.com; blank = HTTP-only, no TLS)" \
         "$(state_get WEBSERVER_DOMAIN)"
     state_set WEBSERVER_DOMAIN "$REPLY"
 
     if [[ -n "$(state_get WEBSERVER_DOMAIN)" ]]; then
+        info "Let's Encrypt uses this email for expiry warnings and policy notices."
+        info "Doesn't have to match the domain; any address you monitor is fine."
         ask_input "Email address for Let's Encrypt notifications" \
             "$(state_get WEBSERVER_EMAIL)"
         state_set WEBSERVER_EMAIL "$REPLY"
