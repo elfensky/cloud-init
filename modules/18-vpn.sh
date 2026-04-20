@@ -118,19 +118,28 @@ _configure_wireguard() {
     info "Client; or WG-Easy / wg-gen-web / hand-rolled). Must contain [Interface]"
     info "with Address + PrivateKey and ≥1 [Peer] with PublicKey + AllowedIPs."
     info "End the paste with a single line containing exactly: EOF"
-    echo ""
 
-    local block="" line
-    while IFS= read -r line; do
-        [[ "$line" == "EOF" ]] && break
-        block+="${line}"$'\n'
+    # Retry on validation failure rather than forcing a full --redo 18-vpn for
+    # a paste typo. The opt-out path routes through state_mark_skipped because
+    # configure_ MUST return 0 — a non-zero return trips main.sh's set -e
+    # before its "⊘ skipped" branch can fire, silently halting the wizard.
+    local block line
+    while true; do
+        block=""
+        echo ""
+        while IFS= read -r line; do
+            [[ "$line" == "EOF" ]] && break
+            block+="${line}"$'\n'
+        done
+
+        if _validate_wg_config "$block"; then
+            break
+        fi
+        if ! ask_yesno "Retry paste?" "y"; then
+            state_mark_skipped vpn
+            return 0
+        fi
     done
-
-    if ! _validate_wg_config "$block"; then
-        err "Invalid WireGuard config — re-run the step with a complete paste."
-        state_mark_skipped vpn
-        return 1
-    fi
     state_set VPN_WG_CONFIG "$block"
 
     info ""
