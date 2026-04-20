@@ -84,7 +84,7 @@ These are the steps a non-Kubernetes operator sees. Answer `n` at step 60 and no
 | `34` | Ubuntu Pro | Optional (ESM + Livepatch). |
 | `40` | Container runtime | **Podman (default)** / Docker Engine / none. If Docker: sub-prompts for docker-group membership and UFW mitigation (`DOCKER-USER` chain or provider firewall). |
 | `41` | Docker firewall | DOCKER-USER chain + `ip_forward=1`. Runs only when Docker is chosen AND the `DOCKER-USER` mitigation is picked at step 40. Podman doesn't have the UFW-bypass problem. |
-| `50` | Host reverse proxy selector | **OpenResty (default)** / nginx / Apache / none. All three install from upstream repos. |
+| `50` | Host reverse proxy selector | **Shape** first: `single-site` (wizard wires default vhost + LE cert), `multi-site` (wizard installs engine only; operator adds per-site vhosts/certs), `other` (internal / proxy-only / advanced). Then **engine**: **OpenResty (default)** / nginx / Apache. All three install from upstream repos. Domain + LE email are only prompted in `single-site` shape. |
 | `51–53` | Install chosen proxy | Writes an HTTP-only default vhost with an ACME webroot location. OpenResty additionally gets the CrowdSec Lua bouncer if step 30 picked CrowdSec. TLS is step 54. |
 | `54` | TLS certificates | Optional Let's Encrypt. Client: certbot / acme.sh. Challenge: HTTP-01 (default) or DNS-01 (wildcards / private hosts). DNS providers: Cloudflare / Route53 / DigitalOcean / manual. Writes the TLS server block for whichever proxy was installed. |
 | `60` | **Install Kubernetes (RKE2)?** | Default: `n`. Answer `n` to stop here — steps 61–79 are all gated on yes. See the Kubernetes section if you want to say yes. |
